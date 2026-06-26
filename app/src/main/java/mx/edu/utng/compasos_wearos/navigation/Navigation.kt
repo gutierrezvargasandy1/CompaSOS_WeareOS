@@ -7,20 +7,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.wear.compose.material.CircularProgressIndicator
-import androidx.wear.compose.material.Text
 import androidx.wear.compose.material3.AppScaffold
 import androidx.wear.compose.navigation.SwipeDismissableNavHost
 import androidx.wear.compose.navigation.composable
 import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
-import mx.edu.utng.compasos_wearos.presentation.theme.Blanco
 import mx.edu.utng.compasos_wearos.presentation.theme.Negro
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaConfirmacionVinculacion
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaInicio
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaVinculacion
+import mx.edu.utng.compasos_wearos.ui.screens.components.DashboardScreen
 import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
 
 @Composable
@@ -34,8 +32,8 @@ fun AppNav(
         return
     }
 
-    // ── timeText = {} elimina el reloj del sistema en todas las pantallas
-    AppScaffold(timeText = {}) {
+
+    AppScaffold() {
         val navController = rememberSwipeDismissableNavController()
 
         SwipeDismissableNavHost(
@@ -94,18 +92,24 @@ fun AppNav(
                 )
             }
 
+            // ── AQUÍ INTEGRAMOS TU DASHBOARD SCREEN COMO EL MENÚ PRINCIPAL ──
             composable("menu_principal") {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Negro),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Menú Principal",
-                        color = Blanco
-                    )
-                }
+                DashboardScreen(
+                    onIrAInicio = {
+                        // Acción al presionar el botón Inicio de tu NavBar
+                        // Por ejemplo, recargar la pantalla o limpiar el stack:
+                        navController.navigate("menu_principal") {
+                            popUpTo("menu_principal") { inclusive = true }
+                        }
+                    },
+                    onIrAAjustes = {
+                        // Acción al pulsar el engrane de Ajustes en tu NavBar
+                        navController.navigate("pantalla_vinculacion") // O tu futura pantalla de ajustes
+                    },
+                    onDispararSOS = {
+                        // Lógica inmediata cuando el usuario pise el botón "SOS" central
+                    }
+                )
             }
         }
     }
