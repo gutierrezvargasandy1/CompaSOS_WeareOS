@@ -3,6 +3,8 @@ package mx.edu.utng.compasos_wearos.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,7 +77,7 @@ fun PantallaInicio(
                 )
                 // Ícono escudo — reemplaza con tu drawable real
                 Icon(
-                    painter = painterResource(id = R.drawable.ic_shield),
+                    imageVector = Icons.Filled.Shield,
                     contentDescription = "Escudo de seguridad",
                     tint = AzulClaro,
                     modifier = Modifier.size(28.dp)
