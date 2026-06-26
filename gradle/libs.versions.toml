@@ -10,6 +10,7 @@ activityCompose = "1.13.0"
 coreSplashscreen = "1.0.1"
 composeMaterial3 = "1.6.2"
 composeNavigation = "1.6.2"
+uiGraphics = "1.11.3"
 
 
 [libraries]
@@ -28,6 +29,7 @@ activity-compose = { group = "androidx.activity", name = "activity-compose", ver
 core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "coreSplashscreen" }
 compose-material3 = { group = "androidx.wear.compose", name = "compose-material3", version.ref = "composeMaterial3" }
 compose-navigation = { group = "androidx.wear.compose", name = "compose-navigation", version.ref = "composeNavigation" }
+androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics", version.ref = "uiGraphics" }
 
 
 
