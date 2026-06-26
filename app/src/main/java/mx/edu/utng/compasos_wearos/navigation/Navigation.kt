@@ -1,15 +1,26 @@
 package mx.edu.utng.compasos_wearos.navigation
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.wear.compose.material.CircularProgressIndicator
+import androidx.wear.compose.material.Text
 import androidx.wear.compose.material3.AppScaffold
 import androidx.wear.compose.navigation.SwipeDismissableNavHost
 import androidx.wear.compose.navigation.composable
 import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
+import mx.edu.utng.compasos_wearos.presentation.theme.Blanco
+import mx.edu.utng.compasos_wearos.presentation.theme.Negro
+import mx.edu.utng.compasos_wearos.ui.screens.PantallaConfirmacionVinculacion
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaInicio
+import mx.edu.utng.compasos_wearos.ui.screens.PantallaVinculacion
 import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
 
 @Composable
@@ -18,38 +29,84 @@ fun AppNav(
 ) {
     val vinculado by vm.estaVinculado.collectAsState()
 
-    // Mientras carga DataStore mostramos un spinner
     if (vinculado == null) {
         CircularProgressIndicator()
         return
     }
 
-    // Destino inicial según si ya está vinculado
-    val inicio = if (vinculado == true) "menu_principal" else "pantalla_inicio"
-
-    AppScaffold {
+    // ── timeText = {} elimina el reloj del sistema en todas las pantallas
+    AppScaffold(timeText = {}) {
         val navController = rememberSwipeDismissableNavController()
 
         SwipeDismissableNavHost(
             navController = navController,
-            startDestination = inicio
+            startDestination = "splash"
         ) {
 
-            // Solo aparece si NO está vinculado
+            composable("splash") {
+                LaunchedEffect(vinculado) {
+                    if (vinculado == true) {
+                        navController.navigate("menu_principal") {
+                            popUpTo("splash") { inclusive = true }
+                        }
+                    } else {
+                        navController.navigate("pantalla_inicio") {
+                            popUpTo("splash") { inclusive = true }
+                        }
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Negro)
+                )
+            }
+
             composable("pantalla_inicio") {
                 PantallaInicio(
                     onEmpezarClick = {
-                        vm.confirmarVinculacion()          // guarda el flag
-                        navController.navigate("menu_principal") {
-                            popUpTo("pantalla_inicio") { inclusive = true } // la saca del stack
-                        }
+                        navController.navigate("pantalla_vinculacion")
                     }
                 )
             }
 
+            composable("pantalla_vinculacion") {
+                PantallaVinculacion(
+                    onVinculacionExitosa = {
+                        navController.navigate("pantalla_confirmacion")
+                    }
+                )
+            }
 
+            composable("pantalla_confirmacion") {
+                PantallaConfirmacionVinculacion(
+                    nombreDispositivo = "Pixel 8 Pro",
+                    nombreReloj = "Este reloj",
+                    onVincular = {
+                        vm.confirmarVinculacion()
+                        navController.navigate("menu_principal") {
+                            popUpTo("pantalla_inicio") { inclusive = true }
+                        }
+                    },
+                    onCancelar = {
+                        navController.popBackStack()
+                    }
+                )
+            }
 
-
+            composable("menu_principal") {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Negro),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Menú Principal",
+                        color = Blanco
+                    )
+                }
+            }
         }
     }
 }
