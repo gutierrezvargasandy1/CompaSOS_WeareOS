@@ -16,6 +16,9 @@ import androidx.wear.compose.navigation.composable
 import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
 import mx.edu.utng.compasos_wearos.data.VinculacionState
 import mx.edu.utng.compasos_wearos.presentation.theme.Negro
+import mx.edu.utng.compasos_wearos.ui.screens.PantallaAcercaDispositivo
+import mx.edu.utng.compasos_wearos.ui.screens.PantallaAjustes
+import mx.edu.utng.compasos_wearos.ui.screens.PantallaAjustesAlerta
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaConfirmacionVinculacion
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaInicio
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaVinculacion
@@ -34,7 +37,7 @@ fun AppNav(
         return
     }
 
-    AppScaffold {
+    AppScaffold(timeText = {}) {
         val navController = rememberSwipeDismissableNavController()
 
         SwipeDismissableNavHost(
@@ -70,13 +73,10 @@ fun AppNav(
             }
 
             composable("pantalla_vinculacion") {
-
-                // Arranca el polling al entrar a esta pantalla
                 LaunchedEffect(Unit) {
                     vm.iniciarEsperaBluetooth()
                 }
 
-                // Navega según el estado
                 LaunchedEffect(estado) {
                     when (estado) {
                         is VinculacionState.SolicitudRecibida -> {
@@ -99,8 +99,6 @@ fun AppNav(
             }
 
             composable("pantalla_confirmacion") {
-
-                // Recupera el nombre real del teléfono del estado actual
                 val nombreTelefono = (estado as? VinculacionState.SolicitudRecibida)
                     ?.nombreTelefono ?: "Teléfono"
 
@@ -120,6 +118,7 @@ fun AppNav(
                 )
             }
 
+            // ── Dashboard — deslizar izquierda lleva a ajustes ───
             composable("menu_principal") {
                 DashboardScreen(
                     onIrAInicio = {
@@ -128,11 +127,44 @@ fun AppNav(
                         }
                     },
                     onIrAAjustes = {
-                        navController.navigate("pantalla_vinculacion")
+                        // SwipeDismissableNavHost ya maneja el swipe de regreso
+                        // Este callback queda para navegación por botón si lo necesitas
+                        navController.navigate("pantalla_ajustes")
                     },
                     onDispararSOS = {
                         // Lógica SOS aquí
+                    },
+                    // Nuevo callback: deslizar izquierda desde el dashboard
+                    onSwipeIzquierda = {
+                        navController.navigate("pantalla_ajustes") {
+                            launchSingleTop = true   // evita apilar duplicados
+                        }
                     }
+                )
+            }
+
+            // ── Pantalla de Ajustes ──────────────────────────────
+            composable("pantalla_ajustes") {
+                PantallaAjustes(
+                    onAjustesAlertaClick = {
+                        navController.navigate("ajustes_alerta")
+                    },
+                    onAcercaClick = {
+                        navController.navigate("acerca_dispositivo")
+                    }
+                )
+            }
+            composable("ajustes_alerta") {
+                PantallaAjustesAlerta(
+                    vm = vm
+
+                )
+            }
+
+            composable("acerca_dispositivo") {
+                PantallaAcercaDispositivo(
+                    // TODO: pasar config real desde el ViewModel
+                    vm = vm
                 )
             }
         }
