@@ -9,58 +9,81 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import mx.edu.utng.compasos_wearos.data.VinculacionEvent
-import mx.edu.utng.compasos_wearos.data.VinculacionManager
 import mx.edu.utng.compasos_wearos.data.VinculacionState
+import mx.edu.utng.compasos_wearos.data.entity.ConfigReloj
 import mx.edu.utng.compasos_wearos.data.repository.VinculacionPrefs
+import mx.edu.utng.compasos_wearos.data.repository.VinculacionRepository
 
 class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val manager = VinculacionManager()
+    private val repo = VinculacionRepository(app)
 
-    val estado = manager.estado
+    // ── Estado de vinculación (flujo de eventos) ─────────────
+    val estado: StateFlow<VinculacionState> = repo.vinculacionManager.estado
 
-    val estaVinculado: StateFlow<Boolean?> =
-        VinculacionPrefs
-            .estaVinculado(app)
-            .stateIn(
-                scope = viewModelScope,
-                started = SharingStarted.WhileSubscribed(5000),
-                initialValue = null
-            )
+    // ── Flag DataStore (primera vez / ya vinculado) ──────────
+    val estaVinculado: StateFlow<Boolean?> = VinculacionPrefs
+        .estaVinculado(app)
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = null
+        )
 
+    // ── Config de Room en tiempo real ────────────────────────
+    val configReloj: StateFlow<ConfigReloj?> = repo.observarConfig()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = null
+        )
+
+    // ── Inicia espera de Bluetooth ───────────────────────────
     fun iniciarEsperaBluetooth() {
         viewModelScope.launch {
-            while (manager.estado.value is VinculacionState.Esperando) {
-                manager.detectarTelefonoConectado(getApplication())
-                delay(2000L)
+            while (true) {
+                repo.detectarYGuardarTelefono(getApplication())
+                delay(3_000)
             }
         }
     }
 
-    fun recibirSolicitud(nombreTelefono: String) {
-        manager.procesarEvento(
-            VinculacionEvent.SolicitudVinculacion(
-                nombreTelefono
-            )
-        )
-    }
-
+    // ── Acepta vinculación → guarda en DataStore y Room ─────
     fun aceptarVinculacion() {
-        manager.procesarEvento(
-            VinculacionEvent.Confirmar
-        )
         viewModelScope.launch {
-            VinculacionPrefs.marcarVinculado(
-                getApplication()
-            )
-            manager.vinculacionExitosa()
+            val estadoActual = estado.value
+            if (estadoActual is VinculacionState.SolicitudRecibida) {
+                repo.guardarVinculacion(
+                    nodeId = estadoActual.nombreTelefono,
+                    nombreTelefono = estadoActual.nombreTelefono
+                )
+            }
+            repo.vinculacionManager.vinculacionExitosa()
+            VinculacionPrefs.marcarVinculado(getApplication())
         }
     }
 
+    // ── Cancela vinculación ──────────────────────────────────
     fun cancelarVinculacion() {
-        manager.procesarEvento(
-            VinculacionEvent.Cancelar
-        )
+        repo.vinculacionManager.procesarEvento(VinculacionEvent.Cancelar)
     }
 
+    // ── Confirma vinculación (DataStore) ─────────────────────
+    fun confirmarVinculacion() {
+        viewModelScope.launch {
+            VinculacionPrefs.marcarVinculado(getApplication())
+        }
+    }
+
+    fun setModoDiscreto(activo: Boolean) {
+        viewModelScope.launch {
+            repo.setModoDiscreto(activo)
+        }
+    }
+
+    fun setTiempoPanico(segundos: Int) {
+        viewModelScope.launch {
+            repo.setTiempoPanico(segundos)
+        }
+    }
 }
