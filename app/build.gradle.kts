@@ -67,4 +67,7 @@ dependencies {
     implementation("androidx.room:room-ktx:${room_version}")
     implementation("androidx.compose.material:material-icons-extended:<version>")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+    implementation("com.google.android.gms:play-services-wearable:18.2.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
+
 }

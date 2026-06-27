@@ -14,6 +14,7 @@ import androidx.wear.compose.material3.AppScaffold
 import androidx.wear.compose.navigation.SwipeDismissableNavHost
 import androidx.wear.compose.navigation.composable
 import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
+import mx.edu.utng.compasos_wearos.data.VinculacionState
 import mx.edu.utng.compasos_wearos.presentation.theme.Negro
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaConfirmacionVinculacion
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaInicio
@@ -26,14 +27,14 @@ fun AppNav(
     vm: VinculacionViewModel = viewModel()
 ) {
     val vinculado by vm.estaVinculado.collectAsState()
+    val estado by vm.estado.collectAsState()
 
     if (vinculado == null) {
         CircularProgressIndicator()
         return
     }
 
-
-    AppScaffold() {
+    AppScaffold {
         val navController = rememberSwipeDismissableNavController()
 
         SwipeDismissableNavHost(
@@ -69,45 +70,68 @@ fun AppNav(
             }
 
             composable("pantalla_vinculacion") {
-                PantallaVinculacion(
-                    onVinculacionExitosa = {
-                        navController.navigate("pantalla_confirmacion")
+
+                // Arranca el polling al entrar a esta pantalla
+                LaunchedEffect(Unit) {
+                    vm.iniciarEsperaBluetooth()
+                }
+
+                // Navega según el estado
+                LaunchedEffect(estado) {
+                    when (estado) {
+                        is VinculacionState.SolicitudRecibida -> {
+                            navController.navigate("pantalla_confirmacion")
+                        }
+                        is VinculacionState.Vinculado -> {
+                            navController.navigate("menu_principal") {
+                                popUpTo("pantalla_inicio") { inclusive = true }
+                            }
+                        }
+                        else -> {}
                     }
+                }
+
+                PantallaVinculacion(
+                    viewModel = vm,
+                    onSolicitudRecibida = {},
+                    onVinculacionExitosa = {}
                 )
             }
 
             composable("pantalla_confirmacion") {
+
+                // Recupera el nombre real del teléfono del estado actual
+                val nombreTelefono = (estado as? VinculacionState.SolicitudRecibida)
+                    ?.nombreTelefono ?: "Teléfono"
+
                 PantallaConfirmacionVinculacion(
-                    nombreDispositivo = "Pixel 8 Pro",
+                    nombreDispositivo = nombreTelefono,
                     nombreReloj = "Este reloj",
                     onVincular = {
-                        vm.confirmarVinculacion()
+                        vm.aceptarVinculacion()
                         navController.navigate("menu_principal") {
                             popUpTo("pantalla_inicio") { inclusive = true }
                         }
                     },
                     onCancelar = {
+                        vm.cancelarVinculacion()
                         navController.popBackStack()
                     }
                 )
             }
 
-            // ── AQUÍ INTEGRAMOS TU DASHBOARD SCREEN COMO EL MENÚ PRINCIPAL ──
             composable("menu_principal") {
                 DashboardScreen(
                     onIrAInicio = {
-                        // Acción al presionar el botón Inicio de tu NavBar
-                        // Por ejemplo, recargar la pantalla o limpiar el stack:
                         navController.navigate("menu_principal") {
                             popUpTo("menu_principal") { inclusive = true }
                         }
                     },
                     onIrAAjustes = {
-                        // Acción al pulsar el engrane de Ajustes en tu NavBar
-                        navController.navigate("pantalla_vinculacion") // O tu futura pantalla de ajustes
+                        navController.navigate("pantalla_vinculacion")
                     },
                     onDispararSOS = {
-                        // Lógica inmediata cuando el usuario pise el botón "SOS" central
+                        // Lógica SOS aquí
                     }
                 )
             }
