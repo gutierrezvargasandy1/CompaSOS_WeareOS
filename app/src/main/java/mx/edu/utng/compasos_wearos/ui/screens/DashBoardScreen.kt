@@ -1,5 +1,6 @@
 package mx.edu.utng.compasos_wearos.ui.screens.components
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -45,6 +46,50 @@ fun DashboardScreen(
     val escalaBoton = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
 
+    // ── NUEVAS VARIABLES para parpadeo y cuenta regresiva ──────
+    var presionando by remember { mutableStateOf(false) }
+    var segundosCuenta by remember { mutableIntStateOf((tiempoPresionMs / 1000).toInt()) }
+
+    // Alpha del botón: parpadea entre 1f y 0.3f mientras se presiona
+    val alphaBoton by animateFloatAsState(
+        targetValue = if (presionando) 0.3f else 1f,
+        animationSpec = if (presionando)
+            infiniteRepeatable(
+                animation = tween(400, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            )
+        else tween(150),
+        label = "parpadeo"
+    )
+
+    // ── ANIMACIONES DE ANILLOS ──────────────────────────────────
+    // Escala: los anillos pulsan (crecen y encogen) mientras se presiona
+    val escalaAnillos by animateFloatAsState(
+        targetValue = if (presionando) 1.08f else 1f,
+        animationSpec = if (presionando)
+            infiniteRepeatable(
+                animation = tween(500, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            )
+        else tween(300),
+        label = "escalaAnillos"
+    )
+
+    // Color anillo exterior: GrisOscuro → rojo oscuro al presionar
+    val colorAnilloExterior by animateColorAsState(
+        targetValue = if (presionando) RojoOscuro.copy(alpha = 0.60f) else GrisOscuro,
+        animationSpec = tween(400),
+        label = "colorExterior"
+    )
+
+    // Color anillo interior: azul → rojo al presionar
+    val colorAnilloInterior by animateColorAsState(
+        targetValue = if (presionando) RojoOscuro.copy(alpha = 0.45f) else AzulSeguro.copy(alpha = 0.20f),
+        animationSpec = tween(400),
+        label = "colorInterior"
+    )
+    // ───────────────────────────────────────────────────────────
+
     if (mostrarDialogo) {
         DialogoConfirmacionSOS(
             onConfirmar = {
@@ -87,7 +132,7 @@ fun DashboardScreen(
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(top = d * 0.12f, end = d * 0.10f)
+                    .padding(top = d * 0.12f, end = d * 0.18f)
                     .background(
                         color = VerdeConectado.copy(alpha = 0.15f),
                         shape = RoundedCornerShape(42)
@@ -107,32 +152,36 @@ fun DashboardScreen(
                 modifier = Modifier.align(Alignment.Center),
                 contentAlignment = Alignment.Center
             ) {
-                // Anillo exterior
+                // Anillo exterior — pulsa y cambia a rojo al presionar
                 Box(
                     modifier = Modifier
-                        .size(zonaSegura)
-                        .background(color = GrisOscuro, shape = CircleShape)
+                        .size(zonaSegura * escalaAnillos)
+                        .background(color = colorAnilloExterior, shape = CircleShape)
                 )
-                // Anillo interior
+                // Anillo interior — pulsa y cambia a rojo al presionar
                 Box(
                     modifier = Modifier
-                        .size(zonaSegura * 0.78f)
+                        .size(zonaSegura * 0.78f * escalaAnillos)
                         .background(
-                            color = AzulSeguro.copy(alpha = 0.20f),
+                            color = colorAnilloInterior,
                             shape = CircleShape
                         )
                 )
-                // Botón SOS con long press personalizado
+                // ── Botón SOS con parpadeo y cuenta regresiva ────
                 Box(
                     modifier = Modifier
                         .size(zonaSegura * 0.62f)
                         .clip(RoundedCornerShape(zonaSegura * 0.14f))
-                        .background(RojoOscuro)
+                        .background(RojoOscuro.copy(alpha = alphaBoton))
                         .pointerInput(tiempoPresionMs) {
                             awaitPointerEventScope {
                                 while (true) {
                                     // Espera toque inicial
                                     awaitFirstDown()
+
+                                    // Activa parpadeo y reinicia cuenta
+                                    presionando = true
+                                    segundosCuenta = (tiempoPresionMs / 1000).toInt()
 
                                     // Animación bajada
                                     scope.launch {
@@ -142,11 +191,18 @@ fun DashboardScreen(
                                         )
                                     }
 
+                                    // Job independiente: reduce contador cada segundo
+                                    val cuentaJob = scope.launch {
+                                        while (segundosCuenta > 0) {
+                                            delay(1_000)
+                                            segundosCuenta--
+                                        }
+                                    }
+
                                     var soltado = false
 
-                                    // Espera tiempoPresionMs
+                                    // Espera tiempoPresionMs o hasta que suelte
                                     val event = withTimeoutOrNull(tiempoPresionMs) {
-                                        // Espera cualquier evento (levantar dedo)
                                         while (true) {
                                             val ev = awaitPointerEvent()
                                             val levanto = ev.changes.any { !it.pressed }
@@ -156,6 +212,11 @@ fun DashboardScreen(
                                             }
                                         }
                                     }
+
+                                    // Cancela la cuenta regresiva si soltó antes
+                                    cuentaJob.cancel()
+                                    presionando = false
+                                    segundosCuenta = (tiempoPresionMs / 1000).toInt()
 
                                     // null = timeout = dedo sostenido el tiempo completo
                                     if (event == null && !soltado) {
@@ -184,11 +245,12 @@ fun DashboardScreen(
                 }
             }
 
-            // ── 3. TEXTO DE AYUDA ────────────────────────────────
+            // ── 3. TEXTO DE AYUDA con cuenta regresiva ───────────
             Text(
-                text = "Mantén presionado ${tiempoPresionMs / 1000} seg",
+                text = if (presionando) "Suelta para cancelar... $segundosCuenta"
+                else "Mantén presionado ${tiempoPresionMs / 1000} seg",
                 style = MaterialTheme.typography.caption1,
-                color = BlancoOpaco,
+                color = if (presionando) AmarilloAlerta else BlancoOpaco,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = d * 0.10f)
@@ -203,17 +265,30 @@ private fun DialogoConfirmacionSOS(
     onConfirmar: () -> Unit,
     onCancelar: () -> Unit
 ) {
-    var segundosRestantes by remember { mutableIntStateOf(5) }
-    val progreso by remember {
-        derivedStateOf { segundosRestantes / 5f }
+    val totalSegundos = 5
+    var segundosRestantes by remember { mutableIntStateOf(totalSegundos) }
+
+    // Progreso fluido: baja de 1f a 0f de forma continua sin saltos
+    val progreso = remember { Animatable(1f) }
+
+    LaunchedEffect(Unit) {
+        // Anima el círculo de 1f → 0f en exactamente totalSegundos segundos
+        progreso.animateTo(
+            targetValue = 0f,
+            animationSpec = tween(
+                durationMillis = totalSegundos * 1000,
+                easing = LinearEasing
+            )
+        )
+        onConfirmar()
     }
 
+    // Actualiza solo el número de texto cada segundo
     LaunchedEffect(Unit) {
         while (segundosRestantes > 0) {
             delay(1_000)
             segundosRestantes--
         }
-        onConfirmar()
     }
 
     Dialog(onDismissRequest = onCancelar) {
@@ -271,7 +346,7 @@ private fun DialogoConfirmacionSOS(
                 // Temporizador circular
                 Box(contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(
-                        progress = progreso,
+                        progress = progreso.value,
                         modifier = Modifier.size(44.dp),
                         strokeWidth = 3.dp,
                         indicatorColor = AmarilloAlerta,
