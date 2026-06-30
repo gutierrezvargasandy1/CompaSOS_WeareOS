@@ -16,23 +16,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import mx.edu.utng.compasos_wearos.helper.FeedbackHelper
 import mx.edu.utng.compasos_wearos.presentation.theme.*
 import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.abs
-
-// TODO: cambiar a false antes de publicar
-private const val ES_DEBUG_DASHBOARD = true
 
 @Composable
 fun DashboardScreen(
@@ -50,8 +51,15 @@ fun DashboardScreen(
     val config by vm.configReloj.collectAsState()
     val tiempoPresionMs = (config?.tiempoPanicoMs ?: 3000).toLong()
     val totalSegundos = (tiempoPresionMs / 1000).toInt()
+    val modoDiscreto = config?.modoDiscreto ?: false
 
     val scope = rememberCoroutineScope()
+
+    val context = LocalContext.current
+    val feedback = remember { FeedbackHelper(context) }
+    DisposableEffect(Unit) {
+        onDispose { feedback.liberar() }
+    }
 
     // ── Reloj en tiempo real ────────────────────────────────────
     var horaActual  by remember { mutableStateOf("") }
@@ -124,8 +132,9 @@ fun DashboardScreen(
 
     if (mostrarDialogo) {
         DialogoConfirmacionSOS(
-            onConfirmar = { mostrarDialogo = false; onDispararSOS() },
-            onCancelar  = { mostrarDialogo = false }
+            modoDiscreto = modoDiscreto,
+            onConfirmar  = { mostrarDialogo = false; onDispararSOS() },
+            onCancelar   = { mostrarDialogo = false }
         )
     }
 
@@ -153,13 +162,13 @@ fun DashboardScreen(
         ) {
             val d = minOf(maxWidth, maxHeight)
 
-            val tamHora    = (d.value * 0.13f).sp
-            val tamFecha   = (d.value * 0.052f).sp
+            val tamHora    = (d.value * 0.095f).sp
+            val tamFecha   = (d.value * 0.040f).sp
             val tamSOS     = (d.value * 0.125f).sp
             val tamCaption = (d.value * 0.056f).sp
-            val tamBadge   = (d.value * 0.048f).sp
-            val padTop     = d * 0.075f
-            val padLateral = d * 0.13f
+            val tamBadge   = (d.value * 0.036f).sp
+            val padTop     = d * 0.080f
+            val padLateral = d * 0.19f
             val zonaSegura = d * 0.50f
 
             // ── 1. HORA + FECHA ──────────────────────────────────
@@ -193,8 +202,8 @@ fun DashboardScreen(
                         shape = RoundedCornerShape(42)
                     )
                     .padding(
-                        horizontal = (d.value * 0.022f).dp,
-                        vertical   = (d.value * 0.008f).dp
+                        horizontal = (d.value * 0.016f).dp,
+                        vertical   = (d.value * 0.006f).dp
                     )
             ) {
                 Text(
@@ -247,6 +256,7 @@ fun DashboardScreen(
                                         while (segundosCuenta > 0) {
                                             delay(1_000)
                                             segundosCuenta--
+                                            feedback.vibrarTick()
                                         }
                                     }
 
@@ -300,24 +310,6 @@ fun DashboardScreen(
                         end    = d * 0.10f
                     )
             )
-
-            // ── 5. BOTÓN TEST (solo debug) ───────────────────────
-            if (ES_DEBUG_DASHBOARD && config?.modoDiscreto == true) {                Button(
-                    onClick  = onTestMovimiento,
-                    modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .padding(start = d * 0.03f)
-                        .size((d.value * 0.15f).dp),
-                    colors = ButtonDefaults.buttonColors(
-                        backgroundColor = AmarilloAlerta.copy(alpha = 0.25f)
-                    )
-                ) {
-                    Text(
-                        text     = "🧪",
-                        fontSize = (d.value * 0.065f).sp
-                    )
-                }
-            }
         }
     }
 }
@@ -336,12 +328,19 @@ private fun lerp(start: Color, end: Color, t: Float): Color {
 // ── Diálogo de confirmación ───────────────────────────────────
 @Composable
 private fun DialogoConfirmacionSOS(
-    onConfirmar: () -> Unit,
-    onCancelar:  () -> Unit
+    modoDiscreto: Boolean,
+    onConfirmar:  () -> Unit,
+    onCancelar:   () -> Unit
 ) {
     val totalSeg = 5
     var segsRestantes by remember { mutableIntStateOf(totalSeg) }
     val progreso = remember { Animatable(1f) }
+
+    val context = LocalContext.current
+    val feedback = remember { FeedbackHelper(context) }
+    DisposableEffect(Unit) {
+        onDispose { feedback.liberar() }
+    }
 
     LaunchedEffect(Unit) {
         progreso.animateTo(
@@ -351,97 +350,115 @@ private fun DialogoConfirmacionSOS(
         onConfirmar()
     }
     LaunchedEffect(Unit) {
-        while (segsRestantes > 0) { delay(1_000); segsRestantes-- }
+        while (segsRestantes > 0) {
+            delay(1_000)
+            segsRestantes--
+            feedback.vibrarTick()
+            feedback.reproducirTick(modoDiscreto)
+        }
     }
 
     Dialog(onDismissRequest = onCancelar) {
         BoxWithConstraints(
-            modifier         = Modifier
+            modifier = Modifier
                 .fillMaxSize()
-                .background(Negro),
-            contentAlignment = Alignment.Center
+                .background(Negro)
         ) {
             val d = minOf(maxWidth, maxHeight)
 
-            Column(
+            ScalingLazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                state = rememberScalingLazyListState(),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy((d.value * 0.025f).dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = d * 0.10f)
+                contentPadding = PaddingValues(
+                    horizontal = d * 0.10f,
+                    vertical   = d * 0.08f
+                )
             ) {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size((d.value * 0.20f).dp)
-                        .clip(CircleShape)
-                        .background(AmarilloAlerta.copy(alpha = 0.18f))
-                ) {
-                    Icon(
-                        imageVector        = Icons.Filled.Warning,
-                        contentDescription = "Advertencia",
-                        tint               = AmarilloAlerta,
-                        modifier           = Modifier.size((d.value * 0.12f).dp)
-                    )
-                }
 
-                Text(
-                    text       = "¿Enviar alerta?",
-                    fontSize   = (d.value * 0.082f).sp,
-                    color      = Blanco,
-                    fontWeight = FontWeight.Bold,
-                    textAlign  = TextAlign.Center
-                )
-
-                Text(
-                    text       = "Se notificará a tus\ncontactos de emergencia",
-                    fontSize   = (d.value * 0.055f).sp,
-                    color      = BlancoOpaco,
-                    textAlign  = TextAlign.Center,
-                    lineHeight = (d.value * 0.072f).sp
-                )
-
-                Box(contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(
-                        progress       = progreso.value,
-                        modifier       = Modifier.size((d.value * 0.19f).dp),
-                        strokeWidth    = (d.value * 0.014f).dp,
-                        indicatorColor = AmarilloAlerta,
-                        trackColor     = GrisMedio
-                    )
-                    Text(
-                        text       = "$segsRestantes",
-                        fontSize   = (d.value * 0.090f).sp,
-                        color      = Blanco,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy((d.value * 0.03f).dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Button(
-                        onClick  = onCancelar,
+                item {
+                    Box(
+                        contentAlignment = Alignment.Center,
                         modifier = Modifier
-                            .weight(1f)
-                            .height((d.value * 0.13f).dp),
-                        colors   = ButtonDefaults.buttonColors(
-                            backgroundColor = GrisMedio
-                        )
+                            .size((d.value * 0.20f).dp)
+                            .clip(CircleShape)
+                            .background(AmarilloAlerta.copy(alpha = 0.18f))
                     ) {
-                        Text("No", fontSize = (d.value * 0.062f).sp, color = Blanco)
+                        Icon(
+                            imageVector        = Icons.Filled.Warning,
+                            contentDescription = "Advertencia",
+                            tint               = AmarilloAlerta,
+                            modifier           = Modifier.size((d.value * 0.12f).dp)
+                        )
                     }
-                    Button(
-                        onClick  = onConfirmar,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height((d.value * 0.13f).dp),
-                        colors   = ButtonDefaults.buttonColors(
-                            backgroundColor = RojoEmergencia
+                }
+
+                item {
+                    Text(
+                        text       = "¿Enviar alerta?",
+                        fontSize   = (d.value * 0.082f).sp,
+                        color      = Blanco,
+                        fontWeight = FontWeight.Bold,
+                        textAlign  = TextAlign.Center
+                    )
+                }
+
+                item {
+                    Text(
+                        text       = "Se notificará a tus\ncontactos de emergencia",
+                        fontSize   = (d.value * 0.055f).sp,
+                        color      = BlancoOpaco,
+                        textAlign  = TextAlign.Center,
+                        lineHeight = (d.value * 0.072f).sp
+                    )
+                }
+
+                item {
+                    Box(contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(
+                            progress       = progreso.value,
+                            modifier       = Modifier.size((d.value * 0.19f).dp),
+                            strokeWidth    = (d.value * 0.014f).dp,
+                            indicatorColor = AmarilloAlerta,
+                            trackColor     = GrisMedio
                         )
+                        Text(
+                            text       = "$segsRestantes",
+                            fontSize   = (d.value * 0.090f).sp,
+                            color      = Blanco,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                item {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy((d.value * 0.03f).dp),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Enviar", fontSize = (d.value * 0.062f).sp, color = Blanco)
+                        Button(
+                            onClick  = onCancelar,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height((d.value * 0.13f).dp),
+                            colors = ButtonDefaults.buttonColors(
+                                backgroundColor = GrisMedio
+                            )
+                        ) {
+                            Text("No", fontSize = (d.value * 0.062f).sp, color = Blanco)
+                        }
+                        Button(
+                            onClick  = onConfirmar,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height((d.value * 0.13f).dp),
+                            colors = ButtonDefaults.buttonColors(
+                                backgroundColor = RojoEmergencia
+                            )
+                        ) {
+                            Text("Enviar", fontSize = (d.value * 0.062f).sp, color = Blanco)
+                        }
                     }
                 }
             }

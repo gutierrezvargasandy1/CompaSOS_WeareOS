@@ -29,18 +29,6 @@ class MovimientoDetector(private val context: Context) : SensorEventListener {
     private val _movimientoErratico = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val movimientoErratico = _movimientoErratico.asSharedFlow()
 
-    // ── Cambia esto a true para simular sin mover el reloj ───
-    var modoSimulacion: Boolean = false
-        set(value) {
-            field = value
-            if (value) {
-                // Dispara inmediatamente al activar
-                ultimaEmision = 0L
-                picos.clear()
-                _movimientoErratico.tryEmit(Unit)
-            }
-        }
-
     private var umbralG       = UMBRAL_G_DEFAULT
     private var escuchando    = false
     private var ultimaEmision = 0L
@@ -68,9 +56,6 @@ class MovimientoDetector(private val context: Context) : SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
-
-        // Si está en simulación el sensor real no hace nada
-        if (modoSimulacion) return
 
         val ahora = System.currentTimeMillis()
         if (ahora - iniciadoEn < WARMUP_MS) return

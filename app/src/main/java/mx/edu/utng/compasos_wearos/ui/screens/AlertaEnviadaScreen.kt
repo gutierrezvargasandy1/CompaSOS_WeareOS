@@ -10,9 +10,13 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -22,11 +26,23 @@ import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import mx.edu.utng.compasos_wearos.helper.FeedbackHelper
 
 @Composable
 fun AlertaEnviadaScreen() {
     // Estado de scroll optimizado para pantallas redondas de Wear OS
     val listState = rememberScalingLazyListState()
+
+    val context = LocalContext.current
+    val feedback = remember { FeedbackHelper(context) }
+    DisposableEffect(Unit) {
+        onDispose { feedback.liberar() }
+    }
+
+    // ── Vibración continua de 2 segundos al entrar ────────────
+    LaunchedEffect(Unit) {
+        feedback.vibrarContinua(2000)
+    }
 
     // Colores extraídos exactamente de la imagen proporcionada
     val rojoAlertaTexto = Color(0xFFE57373)      // Rojo/Salmón del título "Alerta enviada"

@@ -38,14 +38,20 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
             initialValue = null
         )
 
+    // ── Overlay: movimiento brusco detectado ──────────────────
     private val _mostrarAlertaMovimiento = MutableStateFlow(false)
     val mostrarAlertaMovimiento: StateFlow<Boolean> = _mostrarAlertaMovimiento
+
+    // ── Overlay: alerta ya enviada (pantalla final) ───────────
+    // Se activa sin importar si la alerta vino del movimiento
+    // brusco o del botón SOS manual del Dashboard.
+    private val _alertaEnviada = MutableStateFlow(false)
+    val alertaEnviada: StateFlow<Boolean> = _alertaEnviada
 
     init {
         // ── Observa config → activa/desactiva detector ────────
         viewModelScope.launch {
             configReloj.collect { config ->
-                // Espera a tener config real (no null)
                 if (config == null) return@collect
 
                 if (config.modoDiscreto) {
@@ -62,36 +68,39 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
         // ── Escucha disparos del detector ─────────────────────
         viewModelScope.launch {
             movimientoDetector.movimientoErratico.collect {
-                // Solo abre la pantalla si:
-                // 1. No hay ya una alerta visible
-                // 2. El usuario ya está en el dashboard (vinculado)
-                if (!_mostrarAlertaMovimiento.value && estaVinculado.value == true) {
+                if (!_mostrarAlertaMovimiento.value &&
+                    !_alertaEnviada.value &&
+                    estaVinculado.value == true
+                ) {
                     _mostrarAlertaMovimiento.value = true
                 }
             }
         }
     }
 
+    // ── Movimiento inusual: el usuario cancela manualmente ────
     fun descartarAlertaMovimiento() {
         _mostrarAlertaMovimiento.value = false
     }
 
+    // ── Movimiento inusual: confirmado (botón o timeout) ──────
     fun confirmarAlertaMovimiento() {
-
+        _mostrarAlertaMovimiento.value = false
         dispararSOS()
-
-        // NO ocultar el overlay aquí.
     }
 
+    // ── SOS manual (desde el Dashboard) o desde movimiento ────
+    // Activa la pantalla de "Alerta enviada".
     fun dispararSOS() {
         viewModelScope.launch {
-
-            // Aquí va el envío real de la alerta
-
-            // Esperar unos segundos mostrando "Alerta enviada"
-
-            _mostrarAlertaMovimiento.value = false
+            // Aquí va el envío real de la alerta (red, bluetooth, etc.)
+            _alertaEnviada.value = true
         }
+    }
+
+    // ── Oculta la pantalla de "Alerta enviada" ────────────────
+    fun ocultarAlertaEnviada() {
+        _alertaEnviada.value = false
     }
 
     fun iniciarEsperaBluetooth() {
@@ -140,10 +149,8 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
         movimientoDetector.detener()
     }
 
-    // En VinculacionViewModel.kt
     fun simularMovimiento() {
         _mostrarAlertaMovimiento.value = true
-
     }
 
     fun ocultarOverlayMovimiento() {

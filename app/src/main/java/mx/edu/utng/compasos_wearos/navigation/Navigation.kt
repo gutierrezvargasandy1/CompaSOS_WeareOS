@@ -11,6 +11,7 @@ import androidx.wear.compose.material3.AppScaffold
 import androidx.wear.compose.navigation.SwipeDismissableNavHost
 import androidx.wear.compose.navigation.composable
 import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
+import kotlinx.coroutines.delay
 import mx.edu.utng.compasos_wearos.data.VinculacionState
 import mx.edu.utng.compasos_wearos.presentation.theme.Negro
 import mx.edu.utng.compasos_wearos.ui.screens.AlertaEnviadaScreen
@@ -25,7 +26,6 @@ import mx.edu.utng.compasos_wearos.ui.screens.components.DashboardScreen
 import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
 
 // TODO: cambiar a false antes de publicar
-private const val ES_DEBUG = true
 
 @Composable
 fun AppNav(
@@ -34,54 +34,43 @@ fun AppNav(
     val vinculado               by vm.estaVinculado.collectAsState()
     val estado                  by vm.estado.collectAsState()
     val mostrarAlertaMovimiento by vm.mostrarAlertaMovimiento.collectAsState()
-
-    // Este estado controla localmente qué pantalla del overlay mostrar
-    var alertaYaEnviada by remember { mutableStateOf(false) }
-
-    // Si desde el ViewModel se apaga por completo la alerta (ej. al cancelarla),
-    // limpiamos el flag local para futuras alertas.
-    LaunchedEffect(mostrarAlertaMovimiento) {
-        if (!mostrarAlertaMovimiento) {
-            alertaYaEnviada = false
-        }
-    }
+    val alertaEnviada           by vm.alertaEnviada.collectAsState()
 
     if (vinculado == null) {
         CircularProgressIndicator()
         return
     }
 
-    // ── Overlay movimiento inusual e histórico de alertas — encima de todo ───────────
-// ── Overlay movimiento inusual e histórico de alertas — encima de todo ───────────
-// ───────────────── Overlay SOS ─────────────────
+    // ───────────────── Overlay: Alerta ya enviada ─────────────────
+    // Se muestra sin importar si vino del movimiento brusco
+    // o del botón SOS manual del Dashboard. Tiene prioridad
+    // sobre todo lo demás.
+    if (alertaEnviada) {
+
+        AlertaEnviadaScreen()
+
+        LaunchedEffect(Unit) {
+            delay(5000)
+            vm.ocultarAlertaEnviada()
+            // Por si la alerta vino del flujo de movimiento brusco,
+            // asegura que ese overlay también quede cerrado.
+            vm.ocultarOverlayMovimiento()
+        }
+
+        return
+    }
+
+    // ───────────────── Overlay: Movimiento inusual ─────────────────
     if (mostrarAlertaMovimiento) {
 
-        if (alertaYaEnviada) {
-
-            AlertaEnviadaScreen()
-
-            LaunchedEffect(Unit) {
-                kotlinx.coroutines.delay(5000)
-
-                alertaYaEnviada = false
-                vm.ocultarOverlayMovimiento()
+        MovimientoInusualScreen(
+            onEnviar = {
+                vm.confirmarAlertaMovimiento()
+            },
+            onCancelar = {
+                vm.descartarAlertaMovimiento()
             }
-
-        } else {
-
-            MovimientoInusualScreen(
-
-                onEnviar = {
-                    alertaYaEnviada = true
-                    vm.confirmarAlertaMovimiento()
-                },
-
-                onCancelar = {
-                    alertaYaEnviada = false
-                    vm.descartarAlertaMovimiento()
-                }
-            )
-        }
+        )
 
         return
     }
@@ -178,12 +167,8 @@ fun AppNav(
                         navController.navigate("pantalla_ajustes") {
                             launchSingleTop = true
                         }
-                    },
-                    onTestMovimiento = if (ES_DEBUG) {
-                        { vm.simularMovimiento() }
-                    } else {
-                        {}
                     }
+
                 )
             }
 
