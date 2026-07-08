@@ -3,10 +3,7 @@ package mx.edu.utng.compasos_wearos.navigation
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.wear.compose.material.CircularProgressIndicator
@@ -14,8 +11,11 @@ import androidx.wear.compose.material3.AppScaffold
 import androidx.wear.compose.navigation.SwipeDismissableNavHost
 import androidx.wear.compose.navigation.composable
 import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
+import kotlinx.coroutines.delay
 import mx.edu.utng.compasos_wearos.data.VinculacionState
 import mx.edu.utng.compasos_wearos.presentation.theme.Negro
+import mx.edu.utng.compasos_wearos.ui.screens.AlertaEnviadaScreen
+import mx.edu.utng.compasos_wearos.ui.screens.MovimientoInusualScreen
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaAcercaDispositivo
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaAjustes
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaAjustesAlerta
@@ -25,15 +25,53 @@ import mx.edu.utng.compasos_wearos.ui.screens.PantallaVinculacion
 import mx.edu.utng.compasos_wearos.ui.screens.components.DashboardScreen
 import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
 
+// TODO: cambiar a false antes de publicar
+
 @Composable
 fun AppNav(
     vm: VinculacionViewModel = viewModel()
 ) {
-    val vinculado by vm.estaVinculado.collectAsState()
-    val estado by vm.estado.collectAsState()
+    val vinculado               by vm.estaVinculado.collectAsState()
+    val estado                  by vm.estado.collectAsState()
+    val mostrarAlertaMovimiento by vm.mostrarAlertaMovimiento.collectAsState()
+    val alertaEnviada           by vm.alertaEnviada.collectAsState()
 
     if (vinculado == null) {
         CircularProgressIndicator()
+        return
+    }
+
+    // ───────────────── Overlay: Alerta ya enviada ─────────────────
+    // Se muestra sin importar si vino del movimiento brusco
+    // o del botón SOS manual del Dashboard. Tiene prioridad
+    // sobre todo lo demás.
+    if (alertaEnviada) {
+
+        AlertaEnviadaScreen()
+
+        LaunchedEffect(Unit) {
+            delay(5000)
+            vm.ocultarAlertaEnviada()
+            // Por si la alerta vino del flujo de movimiento brusco,
+            // asegura que ese overlay también quede cerrado.
+            vm.ocultarOverlayMovimiento()
+        }
+
+        return
+    }
+
+    // ───────────────── Overlay: Movimiento inusual ─────────────────
+    if (mostrarAlertaMovimiento) {
+
+        MovimientoInusualScreen(
+            onEnviar = {
+                vm.confirmarAlertaMovimiento()
+            },
+            onCancelar = {
+                vm.descartarAlertaMovimiento()
+            }
+        )
+
         return
     }
 
@@ -41,7 +79,7 @@ fun AppNav(
         val navController = rememberSwipeDismissableNavController()
 
         SwipeDismissableNavHost(
-            navController = navController,
+            navController    = navController,
             startDestination = "splash"
         ) {
 
@@ -73,27 +111,21 @@ fun AppNav(
             }
 
             composable("pantalla_vinculacion") {
-                LaunchedEffect(Unit) {
-                    vm.iniciarEsperaBluetooth()
-                }
-
+                LaunchedEffect(Unit) { vm.iniciarEsperaBluetooth() }
                 LaunchedEffect(estado) {
                     when (estado) {
-                        is VinculacionState.SolicitudRecibida -> {
+                        is VinculacionState.SolicitudRecibida ->
                             navController.navigate("pantalla_confirmacion")
-                        }
-                        is VinculacionState.Vinculado -> {
+                        is VinculacionState.Vinculado ->
                             navController.navigate("menu_principal") {
                                 popUpTo("pantalla_inicio") { inclusive = true }
                             }
-                        }
                         else -> {}
                     }
                 }
-
                 PantallaVinculacion(
-                    viewModel = vm,
-                    onSolicitudRecibida = {},
+                    viewModel            = vm,
+                    onSolicitudRecibida  = {},
                     onVinculacionExitosa = {}
                 )
             }
@@ -104,8 +136,8 @@ fun AppNav(
 
                 PantallaConfirmacionVinculacion(
                     nombreDispositivo = nombreTelefono,
-                    nombreReloj = "Este reloj",
-                    onVincular = {
+                    nombreReloj       = "Este reloj",
+                    onVincular        = {
                         vm.aceptarVinculacion()
                         navController.navigate("menu_principal") {
                             popUpTo("pantalla_inicio") { inclusive = true }
@@ -118,32 +150,28 @@ fun AppNav(
                 )
             }
 
-            // ── Dashboard — deslizar izquierda lleva a ajustes ───
             composable("menu_principal") {
                 DashboardScreen(
-                    onIrAInicio = {
+                    onIrAInicio      = {
                         navController.navigate("menu_principal") {
                             popUpTo("menu_principal") { inclusive = true }
                         }
                     },
-                    onIrAAjustes = {
-                        // SwipeDismissableNavHost ya maneja el swipe de regreso
-                        // Este callback queda para navegación por botón si lo necesitas
+                    onIrAAjustes     = {
                         navController.navigate("pantalla_ajustes")
                     },
-                    onDispararSOS = {
-                        // Lógica SOS aquí
+                    onDispararSOS    = {
+                        vm.dispararSOS()
                     },
-                    // Nuevo callback: deslizar izquierda desde el dashboard
                     onSwipeIzquierda = {
                         navController.navigate("pantalla_ajustes") {
-                            launchSingleTop = true   // evita apilar duplicados
+                            launchSingleTop = true
                         }
                     }
+
                 )
             }
 
-            // ── Pantalla de Ajustes ──────────────────────────────
             composable("pantalla_ajustes") {
                 PantallaAjustes(
                     onAjustesAlertaClick = {
@@ -154,18 +182,13 @@ fun AppNav(
                     }
                 )
             }
-            composable("ajustes_alerta") {
-                PantallaAjustesAlerta(
-                    vm = vm
 
-                )
+            composable("ajustes_alerta") {
+                PantallaAjustesAlerta(vm = vm)
             }
 
             composable("acerca_dispositivo") {
-                PantallaAcercaDispositivo(
-                    // TODO: pasar config real desde el ViewModel
-                    vm = vm
-                )
+                PantallaAcercaDispositivo(vm = vm)
             }
         }
     }

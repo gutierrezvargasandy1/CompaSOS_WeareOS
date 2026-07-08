@@ -9,13 +9,13 @@ fun CompaSOSTheme(
 ) {
     MaterialTheme(
         colors = androidx.wear.compose.material.Colors(
-            primary          = RojoEmergencia,
-            primaryVariant   = RojoOscuro,
-            secondary        = AzulClaro,
-            secondaryVariant = AzulSeguro,
-            background       = Negro,
-            surface          = GrisOscuro,
-            error            = AmarilloAlerta,
+            primary          = RojoEmergencia,   // azul profundo — botón SOS
+            primaryVariant   = RojoOscuro,        // variante oscura
+            secondary        = AzulClaro,         // cian eléctrico — íconos / logo
+            secondaryVariant = AzulSeguro,        // azul medio — vinculación
+            background       = Negro,             // azul marino muy oscuro
+            surface          = GrisOscuro,        // cards / superficies
+            error            = AmarilloAlerta,    // advertencia
             onPrimary        = Blanco,
             onSecondary      = Blanco,
             onBackground     = Blanco,
