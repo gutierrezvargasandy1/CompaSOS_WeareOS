@@ -30,7 +30,7 @@ import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
 @Composable
 fun PantallaVinculacion(
     viewModel: VinculacionViewModel,
-    onSolicitudRecibida: (String) -> Unit,
+    onSolicitudConCodigo: (String) -> Unit,   // MQTT trajo un código → ir a teclado
     onVinculacionExitosa: () -> Unit
 ) {
 
@@ -53,34 +53,32 @@ fun PantallaVinculacion(
 
     LaunchedEffect(estado) {
 
-        when (estado) {
+        when (val estadoActual = estado) {
 
             is VinculacionState.Esperando -> {
-                // Esperando solicitud
+                // Esperando conexión con el broker / solicitud del teléfono
             }
 
             is VinculacionState.SolicitudRecibida -> {
+                estadoActual.codigoEsperado?.let { codigo ->
+                    onSolicitudConCodigo(codigo)
+                }
+            }
 
-                val telefono =
-                    (estado as VinculacionState.SolicitudRecibida)
-                        .nombreTelefono
+            is VinculacionState.CodigoIncorrecto -> {
+                // No debería llegar aquí, se maneja en PantallaIngresoCodigo
+            }
 
-                onSolicitudRecibida(telefono)
-
+            is VinculacionState.Vinculando -> {
+                // Indicador de progreso, ya se muestra abajo
             }
 
             is VinculacionState.Vinculado -> {
-
                 onVinculacionExitosa()
-
             }
 
             is VinculacionState.Error -> {
                 // Aquí luego mostraremos un mensaje
-            }
-
-            is VinculacionState.Vinculando -> {
-                // Aquí luego mostraremos un indicador
             }
 
         }
@@ -188,6 +186,9 @@ fun PantallaVinculacion(
                     is VinculacionState.SolicitudRecibida ->
                         "Solicitud recibida"
 
+                    is VinculacionState.CodigoIncorrecto ->
+                        "Código incorrecto, inténtalo de nuevo"
+
                     is VinculacionState.Vinculando ->
                         "Vinculando..."
 
@@ -199,7 +200,7 @@ fun PantallaVinculacion(
 
                 },
                 style = MaterialTheme.typography.caption1,
-                color = BlancoOpaco,
+                color = if (estado is VinculacionState.CodigoIncorrecto) RojoOscuro else BlancoOpaco,
                 textAlign = TextAlign.Center
             )
 

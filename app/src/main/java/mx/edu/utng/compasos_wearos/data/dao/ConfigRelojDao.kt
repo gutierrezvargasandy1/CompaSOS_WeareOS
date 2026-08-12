@@ -30,4 +30,11 @@ interface ConfigRelojDao {
 
     @Query("UPDATE config_reloj SET tiempoPanicoMs = :ms WHERE id = 1")
     suspend fun setTiempoPanico(ms: Int)
+
+    // ── NUEVO: código de vinculación MQTT pendiente ──────────
+    @Query("UPDATE config_reloj SET codigoVinculacion = :codigo WHERE id = 1")
+    suspend fun setCodigoVinculacion(codigo: String)
+
+    @Query("UPDATE config_reloj SET codigoVinculacion = '' WHERE id = 1")
+    suspend fun limpiarCodigoVinculacion()
 }

@@ -19,7 +19,7 @@ import mx.edu.utng.compasos_wearos.ui.screens.MovimientoInusualScreen
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaAcercaDispositivo
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaAjustes
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaAjustesAlerta
-import mx.edu.utng.compasos_wearos.ui.screens.PantallaConfirmacionVinculacion
+import mx.edu.utng.compasos_wearos.ui.screens.PantallaIngresoCodigo
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaInicio
 import mx.edu.utng.compasos_wearos.ui.screens.PantallaVinculacion
 import mx.edu.utng.compasos_wearos.ui.screens.components.DashboardScreen
@@ -42,9 +42,6 @@ fun AppNav(
     }
 
     // ───────────────── Overlay: Alerta ya enviada ─────────────────
-    // Se muestra sin importar si vino del movimiento brusco
-    // o del botón SOS manual del Dashboard. Tiene prioridad
-    // sobre todo lo demás.
     if (alertaEnviada) {
 
         AlertaEnviadaScreen()
@@ -52,8 +49,6 @@ fun AppNav(
         LaunchedEffect(Unit) {
             delay(5000)
             vm.ocultarAlertaEnviada()
-            // Por si la alerta vino del flujo de movimiento brusco,
-            // asegura que ese overlay también quede cerrado.
             vm.ocultarOverlayMovimiento()
         }
 
@@ -110,12 +105,16 @@ fun AppNav(
                 )
             }
 
+            // ── Espera a que llegue la solicitud del teléfono por MQTT ──
             composable("pantalla_vinculacion") {
-                LaunchedEffect(Unit) { vm.iniciarEsperaBluetooth() }
+
                 LaunchedEffect(estado) {
-                    when (estado) {
-                        is VinculacionState.SolicitudRecibida ->
-                            navController.navigate("pantalla_confirmacion")
+                    when (val estadoActual = estado) {
+                        is VinculacionState.SolicitudRecibida -> {
+                            estadoActual.codigoEsperado?.let {
+                                navController.navigate("pantalla_codigo")
+                            }
+                        }
                         is VinculacionState.Vinculado ->
                             navController.navigate("menu_principal") {
                                 popUpTo("pantalla_inicio") { inclusive = true }
@@ -123,28 +122,34 @@ fun AppNav(
                         else -> {}
                     }
                 }
+
                 PantallaVinculacion(
                     viewModel            = vm,
-                    onSolicitudRecibida  = {},
+                    onSolicitudConCodigo = {},
                     onVinculacionExitosa = {}
                 )
             }
 
-            composable("pantalla_confirmacion") {
-                val nombreTelefono = (estado as? VinculacionState.SolicitudRecibida)
-                    ?.nombreTelefono ?: "Teléfono"
+            // ── Teclado para el código MQTT ──────
+            composable("pantalla_codigo") {
 
-                PantallaConfirmacionVinculacion(
-                    nombreDispositivo = nombreTelefono,
-                    nombreReloj       = "Este reloj",
-                    onVincular        = {
-                        vm.aceptarVinculacion()
-                        navController.navigate("menu_principal") {
-                            popUpTo("pantalla_inicio") { inclusive = true }
-                        }
-                    },
+                LaunchedEffect(estado) {
+                    when (estado) {
+                        is VinculacionState.Vinculado ->
+                            navController.navigate("menu_principal") {
+                                popUpTo("pantalla_inicio") { inclusive = true }
+                            }
+                        is VinculacionState.Esperando ->
+                            // Se canceló o expiró: regresa
+                            navController.popBackStack("pantalla_vinculacion", inclusive = false)
+                        else -> {}
+                    }
+                }
+
+                PantallaIngresoCodigo(
+                    viewModel  = vm,
                     onCancelar = {
-                        vm.cancelarVinculacion()
+                        vm.cancelarVinculacionMqtt()
                         navController.popBackStack()
                     }
                 )

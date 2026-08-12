@@ -43,12 +43,18 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
     val mostrarAlertaMovimiento: StateFlow<Boolean> = _mostrarAlertaMovimiento
 
     // ── Overlay: alerta ya enviada (pantalla final) ───────────
-    // Se activa sin importar si la alerta vino del movimiento
-    // brusco o del botón SOS manual del Dashboard.
     private val _alertaEnviada = MutableStateFlow(false)
     val alertaEnviada: StateFlow<Boolean> = _alertaEnviada
 
     init {
+        // ── NUEVO: empieza a escuchar solicitudes de vinculación MQTT ──
+        // El código llega por MQTT, se guarda en Room, y el estado pasa
+        // a SolicitudRecibida(codigoEsperado = ...) para que la UI pida
+        // que el usuario lo teclee.
+        viewModelScope.launch {
+            repo.escucharSolicitudesVinculacion()
+        }
+
         // ── Observa config → activa/desactiva detector ────────
         viewModelScope.launch {
             configReloj.collect { config ->
@@ -90,7 +96,6 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── SOS manual (desde el Dashboard) o desde movimiento ────
-    // Activa la pantalla de "Alerta enviada".
     fun dispararSOS() {
         viewModelScope.launch {
             // Aquí va el envío real de la alerta (red, bluetooth, etc.)
@@ -103,6 +108,7 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
         _alertaEnviada.value = false
     }
 
+    // ── Flujo VIEJO: detección automática por Wearable Node API ──
     fun iniciarEsperaBluetooth() {
         viewModelScope.launch {
             while (true) {
@@ -112,17 +118,38 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ── Flujo VIEJO: aceptar sin código (Node detectado directo) ──
     fun aceptarVinculacion() {
         viewModelScope.launch {
             val estadoActual = estado.value
-            if (estadoActual is VinculacionState.SolicitudRecibida) {
+            if (estadoActual is VinculacionState.SolicitudRecibida &&
+                estadoActual.codigoEsperado == null
+            ) {
                 repo.guardarVinculacion(
                     nodeId         = estadoActual.nombreTelefono,
                     nombreTelefono = estadoActual.nombreTelefono
                 )
+                repo.vinculacionManager.vinculacionExitosa()
+                VinculacionPrefs.marcarVinculado(getApplication())
             }
-            repo.vinculacionManager.vinculacionExitosa()
-            VinculacionPrefs.marcarVinculado(getApplication())
+        }
+    }
+
+    // ── NUEVO: flujo MQTT — el usuario teclea el código del teléfono ──
+    fun ingresarCodigo(codigo: String) {
+        viewModelScope.launch {
+            val exito = repo.confirmarCodigo(codigo)
+            if (exito) {
+                VinculacionPrefs.marcarVinculado(getApplication())
+            }
+            // Si no coincide, el estado ya cambió solo a CodigoIncorrecto
+        }
+    }
+
+    // ── NUEVO: cancelar mientras se espera/teclea el código MQTT ──
+    fun cancelarVinculacionMqtt() {
+        viewModelScope.launch {
+            repo.cancelarVinculacionPendiente()
         }
     }
 

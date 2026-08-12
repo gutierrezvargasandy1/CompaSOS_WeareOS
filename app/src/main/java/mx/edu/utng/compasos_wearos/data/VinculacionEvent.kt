@@ -1,17 +1,13 @@
 package mx.edu.utng.compasos_wearos.data
 
 sealed class VinculacionEvent {
-
     object BuscarReloj : VinculacionEvent()
-
-    data class SolicitudVinculacion(
-        val nombreTelefono: String
-    ) : VinculacionEvent()
-
+    data class SolicitudVinculacion(val nombreTelefono: String) : VinculacionEvent()
     object Confirmar : VinculacionEvent()
-
     object Cancelar : VinculacionEvent()
-
     object Desconectar : VinculacionEvent()
 
+    // ── NUEVO: flujo MQTT con código ──────────────────────────
+    data class SolicitudMqttRecibida(val codigo: String, val usuarioId: String) : VinculacionEvent()
+    object CodigoIncorrecto : VinculacionEvent()
 }

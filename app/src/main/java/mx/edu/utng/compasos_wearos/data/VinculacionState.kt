@@ -2,32 +2,24 @@ package mx.edu.utng.compasos_wearos.data
 
 sealed class VinculacionState {
 
-    /**
-     * El reloj está esperando una solicitud.
-     */
     object Esperando : VinculacionState()
 
     /**
-     * El teléfono encontró el reloj y solicita vincularse.
+     * codigoEsperado != null  → viene del flujo MQTT, el usuario debe teclearlo
+     * codigoEsperado == null  → viene del flujo Node/Wearable (detección automática)
      */
     data class SolicitudRecibida(
-        val nombreTelefono: String
+        val nombreTelefono: String,
+        val codigoEsperado: String? = null,
+        val usuarioId: String? = null
     ) : VinculacionState()
 
-    /**
-     * El usuario aceptó la vinculación.
-     */
+    data class CodigoIncorrecto(
+        val codigoEsperado: String,
+        val usuarioId: String?
+    ) : VinculacionState()
+
     object Vinculando : VinculacionState()
-
-    /**
-     * Vinculación terminada.
-     */
     object Vinculado : VinculacionState()
-
-    /**
-     * Error durante la vinculación.
-     */
-    data class Error(
-        val mensaje: String
-    ) : VinculacionState()
+    data class Error(val mensaje: String) : VinculacionState()
 }

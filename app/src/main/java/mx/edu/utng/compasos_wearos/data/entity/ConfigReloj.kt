@@ -18,5 +18,6 @@ data class ConfigReloj(
     val modoDiscreto: Boolean = true,
     val deviceIdVinculado: String = "",
     val nombreDispositivoVinculado: String = "",
+    val codigoVinculacion: String = "",      // código MQTT pendiente de confirmar
     val ultimaActualizacion: Long = System.currentTimeMillis()
 )

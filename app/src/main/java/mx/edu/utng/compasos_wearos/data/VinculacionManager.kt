@@ -5,37 +5,24 @@ import com.google.android.gms.wearable.Wearable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.tasks.await          // para .await()
+import kotlinx.coroutines.tasks.await
+
 class VinculacionManager {
 
-    private val _estado =
-        MutableStateFlow<VinculacionState>(VinculacionState.Esperando)
-
+    private val _estado = MutableStateFlow<VinculacionState>(VinculacionState.Esperando)
     val estado: StateFlow<VinculacionState> = _estado.asStateFlow()
 
-    // ── NUEVO: detecta el teléfono conectado ──────────────────────────
     suspend fun detectarTelefonoConectado(context: Context) {
         try {
-            val nodos = Wearable.getNodeClient(context)
-                .connectedNodes
-                .await()
-
+            val nodos = Wearable.getNodeClient(context).connectedNodes.await()
             val telefono = nodos.firstOrNull()
-
             if (telefono != null) {
-                // Teléfono encontrado → disparar SolicitudRecibida con su nombre
-                procesarEvento(
-                    VinculacionEvent.SolicitudVinculacion(
-                        telefono.displayName  // nombre real del emulador
-                    )
-                )
+                procesarEvento(VinculacionEvent.SolicitudVinculacion(telefono.displayName))
             }
-            // Si la lista está vacía, seguimos en Esperando
         } catch (e: Exception) {
-            // Sin conexión todavía, no hacemos nada
+            // Sin conexión todavía
         }
     }
-    // ─────────────────────────────────────────────────────────────────
 
     fun procesarEvento(evento: VinculacionEvent) {
         when (evento) {
@@ -53,6 +40,21 @@ class VinculacionManager {
 
             is VinculacionEvent.Desconectar ->
                 _estado.value = VinculacionState.Esperando
+
+            // ── NUEVO ──────────────────────────────────────────
+            is VinculacionEvent.SolicitudMqttRecibida ->
+                _estado.value = VinculacionState.SolicitudRecibida(
+                    nombreTelefono = "Teléfono",
+                    codigoEsperado = evento.codigo,
+                    usuarioId = evento.usuarioId
+                )
+
+            is VinculacionEvent.CodigoIncorrecto -> {
+                val actual = _estado.value
+                if (actual is VinculacionState.SolicitudRecibida && actual.codigoEsperado != null) {
+                    _estado.value = VinculacionState.CodigoIncorrecto(actual.codigoEsperado, actual.usuarioId)
+                }
+            }
         }
     }
 
