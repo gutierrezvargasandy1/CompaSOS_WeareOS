@@ -52,12 +52,6 @@ fun AlertaEnviadaScreen() {
     val bordeCardAudio = Color(0xFF1B3224)       // Borde sutil verde
     val verdeAudioTexto = Color(0xFF81C784)      // Verde del texto de audio
 
-    // Iniciales simuladas de los familiares
-    val familiares = listOf(
-        Pair("MA", Color(0xFF1565C0)), // Azul
-        Pair("LM", Color(0xFF2E7D32)), // Verde
-        Pair("SF", Color(0xFFE65100))  // Amarillo/Naranja opaco
-    )
 
     ScalingLazyColumn(
         modifier = Modifier
@@ -106,23 +100,7 @@ fun AlertaEnviadaScreen() {
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.padding(vertical = 4.dp)
             ) {
-                familiares.forEach { familiar ->
-                    Box(
-                        modifier = Modifier
-                            .size(28.dp)
-                            .background(familiar.second.copy(alpha = 0.3f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = familiar.first,
-                            color = familiar.second,
-                            style = MaterialTheme.typography.caption1.copy(
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp
-                            )
-                        )
-                    }
-                }
+
             }
         }
 

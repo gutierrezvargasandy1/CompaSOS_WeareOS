@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import mx.edu.utng.compasos_wearos.data.VinculacionEvent
 import mx.edu.utng.compasos_wearos.data.VinculacionState
 import mx.edu.utng.compasos_wearos.data.entity.ConfigReloj
+import mx.edu.utng.compasos_wearos.data.repository.AlertaWearRepository
 import mx.edu.utng.compasos_wearos.data.repository.VinculacionPrefs
 import mx.edu.utng.compasos_wearos.data.repository.VinculacionRepository
 import mx.edu.utng.compasos_wearos.services.MovimientoDetector
@@ -22,6 +23,12 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
     private val movimientoDetector = MovimientoDetector(app)
 
     val estado: StateFlow<VinculacionState> = repo.vinculacionManager.estado
+    private val alertaRepo = AlertaWearRepository(app)
+    // Para trackear la alerta activa
+    private var alertaActivaId:      String? = null
+    private var alertaDispositivoId: String? = null
+
+
 
     val estaVinculado: StateFlow<Boolean?> = VinculacionPrefs
         .estaVinculado(app)
@@ -98,8 +105,22 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
     // ── SOS manual (desde el Dashboard) o desde movimiento ────
     fun dispararSOS() {
         viewModelScope.launch {
-            // Aquí va el envío real de la alerta (red, bluetooth, etc.)
+            val resultado = alertaRepo.enviarSOS()
+            if (resultado != null) {
+                alertaActivaId      = resultado.first
+                alertaDispositivoId = resultado.second
+                // Sigue enviando la ubicación cada 30 s durante 5 min
+                iniciarUbicacionPeriodica(resultado.first, resultado.second)
+            }
             _alertaEnviada.value = true
+        }
+    }
+
+    private fun iniciarUbicacionPeriodica(alertaId: String, dispositivoId: String) {
+        viewModelScope.launch {
+            repeat(10) {
+                delay(30_000L)
+            }
         }
     }
 
