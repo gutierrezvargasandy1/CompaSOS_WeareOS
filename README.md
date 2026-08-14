@@ -4,9 +4,23 @@
 
 **Nombre del proyecto:** CompaSOS
 
-**Nombre del estudiante:** José Andrés Gutiérrez Vargas
+**Nombre de los estudiantes:** José Andrés Gutiérrez Vargas, Ana María Barrientos Guerrero
 
 **Grupo:** GIDS6093
+
+---
+
+# Beneficiario y problemática atendida
+
+El proyecto fue validado por **Saul Aguayo Arredondo**, Sub director de la **Escuela Secundaria Técnica No 26**.
+
+En una situación de emergencia (una caída, una descompensación de salud, un accidente doméstico o un riesgo en la vía pública) lo que determina el desenlace es el tiempo que transcurre entre el incidente y el momento en que alguien se entera. Actualmente ese aviso depende de una cadena frágil de condiciones: que la persona traiga el teléfono consigo, esté consciente, pueda desbloquearlo, ubique al contacto correcto y logre explicar dónde se encuentra. Basta con que una sola de esas condiciones falle para que la ayuda se retrase o no llegue.
+
+La problemática se agudiza en quienes pasan tiempo solos o dependen de un tercero: adultos mayores, personas con enfermedades crónicas o alguna discapacidad, y quienes se trasladan por zonas inseguras. Del otro lado, sus familiares y cuidadores no tienen una manera sencilla de saber si están bien sin llamar de forma constante, lo que impone una carga de vigilancia permanente que, aun así, no garantiza una reacción oportuna.
+
+A lo anterior se suma una limitación tecnológica de fondo: las alternativas disponibles viven en un solo dispositivo, casi siempre el teléfono, que es justamente el que no siempre está encima ni al alcance de la mano. No aprovechan el reloj inteligente que la persona porta durante todo el día, ni la televisión, que en muchos hogares —sobre todo donde hay adultos mayores— es la pantalla de mayor uso y la más fácil de operar. El resultado es una cobertura fragmentada que deja al usuario desprotegido precisamente en los momentos y lugares donde más necesita apoyo.
+
+Este módulo wearable atiende directamente esa brecha: lleva la capacidad de pedir ayuda al dispositivo que la persona porta de manera permanente, eliminando la dependencia de tener el teléfono a la mano.
 
 ---
 
@@ -96,18 +110,15 @@ git clone  -b dev https://github.com/gutierrezvargasandy1/CompaSOS_WeareOS.git
 
 ## Conexion con dispositivo Android
 
-
 ![Conexion](imagenes/Conexion.png)
 
 ---
 
 ## Pantalla confirmacion de Conexion
 
-
 ![confirmacion](imagenes/confirmacion.png)
 
 ## Pantalla Principal 
-
 
 ![Principal](imagenes/principal.png)
 
@@ -115,11 +126,9 @@ git clone  -b dev https://github.com/gutierrezvargasandy1/CompaSOS_WeareOS.git
 
 ## Pantalla SOS
 
-
 ![SOS](imagenes/sos.png)
 
 ---
-
 
 # Estructura del proyecto
 
@@ -138,9 +147,11 @@ CompaSOS/
 
 ---
 
-# Autor
+# Autores
 
 **José Andrés Gutiérrez Vargas**
+
+**Ana María Barrientos Guerrero**
 
 **Grupo:** GIDS6093
 
