@@ -1,0 +1,4883 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+app/
+  src/
+    main/
+      java/
+        mx/
+          edu/
+            utng/
+              compasos_wearos/
+                config/
+                  mqtt/
+                    MqttConfig.kt
+                    MqttManager.kt
+                data/
+                  dao/
+                    ConfigRelojDao.kt
+                    EventoPendienteDao.kt
+                    HistorialFrecuenciaDao.kt
+                  db/
+                    WearDatabase.kt
+                  entity/
+                    ConfigReloj.kt
+                    EventoPendiente.kt
+                    HistorialFrecuencia.kt
+                  repository/
+                    AlertaWearRepository.kt
+                    VinculacionPrefs.kt
+                    VinculacionRepository.kt
+                    WearRepository.kt
+                  VinculacionEvent.kt
+                  VinculacionManager.kt
+                  VinculacionState.kt
+                helper/
+                  FeedbackHelper.kt
+                navigation/
+                  Navigation.kt
+                presentation/
+                  theme/
+                    Color.kt
+                    Theme.kt
+                    Type.kt
+                  MainActivity.kt
+                services/
+                  MovimientoDetector.kt
+                ui/
+                  screens/
+                    AlertaEnviadaScreen.kt
+                    DashBoardScreen.kt
+                    MovimientoInusualScreen.kt
+                    PantallaAcercaDispositivo.kt
+                    PantallaAjustes.kt
+                    PantallaAjustesAlerta.kt
+                    PantallaIngresoCodigo.kt
+                    PantallaInicio.kt
+                    PantallaVinculacion.kt
+                viewmodel/
+                  VinculacionViewModel.kt
+      res/
+        drawable/
+          ic_launcher_background.xml
+          ic_launcher_foreground.xml
+          splash_icon.xml
+        mipmap-anydpi/
+          ic_launcher_round.xml
+          ic_launcher.xml
+        mipmap-hdpi/
+          ic_launcher_round.webp
+          ic_launcher.webp
+        mipmap-mdpi/
+          ic_launcher_round.webp
+          ic_launcher.webp
+        mipmap-xhdpi/
+          ic_launcher_round.webp
+          ic_launcher.webp
+        mipmap-xxhdpi/
+          ic_launcher_round.webp
+          ic_launcher.webp
+        mipmap-xxxhdpi/
+          ic_launcher_round.webp
+          ic_launcher.webp
+        raw/
+          tick.mp3
+        values/
+          strings.xml
+          styles.xml
+        values-round/
+          strings.xml
+      AndroidManifest.xml
+  .gitignore
+  build.gradle.kts
+  lint.xml
+  proguard-rules.pro
+gradle/
+  wrapper/
+    gradle-wrapper.jar
+    gradle-wrapper.properties
+  libs.versions.toml
+imagenes/
+  Conexion.png
+  confirmacion.png
+  login.png
+  principal.png
+  sos.png
+.gitignore
+app-debug.apk
+build.gradle.kts
+gradle.properties
+gradlew
+gradlew.bat
+README.md
+settings.gradle.kts
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/config/mqtt/MqttManager.kt">
+package mx.edu.utng.compasos_wearos.config.mqtt
+
+import android.util.Log
+import org.eclipse.paho.client.mqttv3.*
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
+
+class MqttManager {
+
+    companion object {
+        private const val TAG = "MqttManager"
+    }
+
+    private var client: MqttClient? = null
+
+    val estaConectado: Boolean
+        get() = client?.isConnected == true
+
+    /** Llamar siempre desde Dispatchers.IO */
+    fun conectar() {
+        if (estaConectado) return
+        try {
+            val clientId = "compasos_movil_${System.currentTimeMillis()}"
+            client = MqttClient(MqttConfig.BROKER_URL, clientId, MemoryPersistence())
+
+            val options = MqttConnectOptions().apply {
+                isCleanSession      = true
+                connectionTimeout   = MqttConfig.TIMEOUT_CONEXION
+                keepAliveInterval   = MqttConfig.KEEP_ALIVE
+                isAutomaticReconnect = false
+            }
+            client!!.connect(options)
+            Log.d(TAG, "Conectado a: ${MqttConfig.BROKER_URL}")
+        } catch (e: MqttException) {
+            Log.e(TAG, "Error al conectar: código=${e.reasonCode}, ${e.message}")
+            throw e
+        }
+    }
+
+    fun desconectar() {
+        try {
+            client?.takeIf { it.isConnected }?.disconnect()
+            Log.d(TAG, "Desconectado del broker")
+        } catch (e: MqttException) {
+            Log.e(TAG, "Error al desconectar: ${e.message}")
+        } finally {
+            client = null
+        }
+    }
+
+    /** Llamar desde Dispatchers.IO */
+    fun publicar(topic: String, payload: String, qos: Int = MqttConfig.QOS) {
+        val c = client ?: throw IllegalStateException("MQTT no conectado")
+        val message = MqttMessage(payload.toByteArray(Charsets.UTF_8)).apply { this.qos = qos }
+        c.publish(topic, message)
+        Log.d(TAG, "► [$topic]: $payload")
+    }
+
+    /**
+     * El callback se ejecuta en el hilo interno de Paho.
+     * Desde el callback usa viewModelScope.launch para actualizar estado.
+     */
+    fun suscribir(topic: String, onMensaje: (topic: String, payload: String) -> Unit) {
+        val c = client ?: throw IllegalStateException("MQTT no conectado")
+        c.subscribe(topic, MqttConfig.QOS) { t, message ->
+            val payload = String(message.payload, Charsets.UTF_8)
+            Log.d(TAG, "◄ [$t]: $payload")
+            onMensaje(t, payload)
+        }
+        Log.d(TAG, "Suscrito a: $topic")
+    }
+
+    fun desuscribir(topic: String) {
+        try {
+            client?.unsubscribe(topic)
+            Log.d(TAG, "Desuscrito de: $topic")
+        } catch (e: MqttException) {
+            Log.e(TAG, "Error al desuscribir de $topic: ${e.message}")
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/dao/EventoPendienteDao.kt">
+package mx.edu.utng.compasos_wearos.data.dao
+
+import androidx.room.*
+import kotlinx.coroutines.flow.Flow
+import mx.edu.utng.compasos_wearos.data.entity.EventoPendiente
+
+@Dao
+interface EventoPendienteDao {
+
+    @Insert
+    suspend fun insertar(evento: EventoPendiente): Long
+
+    @Query("SELECT * FROM eventos_pendientes WHERE sincronizado = 0 ORDER BY timestamp ASC")
+    suspend fun obtenerPendientes(): List<EventoPendiente>
+
+    @Query("SELECT * FROM eventos_pendientes ORDER BY timestamp DESC")
+    fun observarTodos(): Flow<List<EventoPendiente>>
+
+    @Query("UPDATE eventos_pendientes SET sincronizado = 1 WHERE id = :id")
+    suspend fun marcarSincronizado(id: Int)
+
+    @Query("UPDATE eventos_pendientes SET intentosSincronizacion = intentosSincronizacion + 1 WHERE id = :id")
+    suspend fun incrementarIntentos(id: Int)
+
+    @Query("DELETE FROM eventos_pendientes WHERE sincronizado = 1")
+    suspend fun limpiarSincronizados()
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/dao/HistorialFrecuenciaDao.kt">
+package mx.edu.utng.compasos_wearos.data.dao
+
+import androidx.room.*
+import mx.edu.utng.compasos_wearos.data.entity.HistorialFrecuencia
+
+@Dao
+interface HistorialFrecuenciaDao {
+
+    @Insert
+    suspend fun insertar(lectura: HistorialFrecuencia)
+
+    @Query("SELECT * FROM historial_frecuencia WHERE timestamp > :desde ORDER BY timestamp ASC")
+    suspend fun obtenerDesde(desde: Long): List<HistorialFrecuencia>
+
+    @Query("DELETE FROM historial_frecuencia WHERE timestamp < :antes")
+    suspend fun purgarAnterioresA(antes: Long)
+
+    @Query("SELECT COUNT(*) FROM historial_frecuencia WHERE bpm > :umbral AND timestamp > :desde")
+    suspend fun contarPicosSostenidos(umbral: Int, desde: Long): Int
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/db/WearDatabase.kt">
+package mx.edu.utng.compasos_wearos.data.db
+import android.content.Context
+import androidx.room.Database
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import mx.edu.utng.compasos_wearos.data.dao.ConfigRelojDao
+import mx.edu.utng.compasos_wearos.data.dao.EventoPendienteDao
+import mx.edu.utng.compasos_wearos.data.dao.HistorialFrecuenciaDao
+import mx.edu.utng.compasos_wearos.data.entity.ConfigReloj
+import mx.edu.utng.compasos_wearos.data.entity.EventoPendiente
+import mx.edu.utng.compasos_wearos.data.entity.HistorialFrecuencia
+
+@Database(
+    entities = [
+        ConfigReloj::class,
+        EventoPendiente::class,
+        HistorialFrecuencia::class
+    ],
+    version = 1,
+    exportSchema = false
+)
+abstract class WearDatabase : RoomDatabase() {
+
+    abstract fun configRelojDao(): ConfigRelojDao
+    abstract fun eventoPendienteDao(): EventoPendienteDao
+    abstract fun historialFrecuenciaDao(): HistorialFrecuenciaDao
+
+    companion object {
+
+        @Volatile
+        private var INSTANCE: WearDatabase? = null
+
+        fun getInstance(context: Context): WearDatabase =
+            INSTANCE ?: synchronized(this) {
+                INSTANCE ?: Room.databaseBuilder(
+                    context.applicationContext,
+                    WearDatabase::class.java,
+                    "compaSOS_wear.db"
+                ).build().also { INSTANCE = it }
+            }
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/entity/EventoPendiente.kt">
+package mx.edu.utng.compasos_wearos.data.entity
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+
+@Entity(tableName = "eventos_pendientes")
+data class EventoPendiente(
+    @PrimaryKey(autoGenerate = true)
+    val id: Int = 0,
+    val tipoEvento: String,
+    val timestamp: Long = System.currentTimeMillis(),
+    val latitud: Double? = null,
+    val longitud: Double? = null,
+    val bpmRegistrado: Int? = null,
+    val rutaAudioLocal: String? = null,
+    val sincronizado: Boolean = false,
+    val intentosSincronizacion: Int = 0
+)
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/entity/HistorialFrecuencia.kt">
+package mx.edu.utng.compasos_wearos.data.entity
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+
+@Entity(tableName = "historial_frecuencia")
+data class HistorialFrecuencia(
+    @PrimaryKey(autoGenerate = true)
+    val id: Int = 0,
+    val bpm: Int,
+    val timestamp: Long = System.currentTimeMillis(),
+    val generoAlerta: Boolean = false
+)
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/repository/AlertaWearRepository.kt">
+package mx.edu.utng.compasos_wearos.data.repository
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.provider.Settings
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import mx.edu.utng.compasos_wearos.config.mqtt.MqttConfig
+import mx.edu.utng.compasos_wearos.config.mqtt.MqttManager
+import mx.edu.utng.compasos_wearos.data.db.WearDatabase
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.*
+
+class AlertaWearRepository(private val context: Context) {
+
+    private val mqtt = MqttManager()
+    private val dao  = WearDatabase.getInstance(context).configRelojDao()
+    private val fmt  = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+
+    /**
+     * El reloj actúa como control remoto: publica el trigger SOS.
+     * El teléfono es responsable de obtener la ubicación y crear la alerta completa.
+     */
+    @SuppressLint("HardwareIds")
+    suspend fun enviarSOS(): Pair<String, String>? = withContext(Dispatchers.IO) {
+        try {
+            if (!mqtt.estaConectado) mqtt.conectar()
+
+            val config = dao.obtenerConfig() ?: run {
+                Log.e("AlertaWearRepo", "Sin config en Room")
+                return@withContext null
+            }
+
+            val dispositivoId = config.deviceIdVinculado.ifBlank {
+                "wear_${Settings.Secure.getString(
+                    context.contentResolver,
+                    Settings.Secure.ANDROID_ID
+                )}"
+            }
+            val alertaId = UUID.randomUUID().toString()
+
+            val payload = JSONObject().apply {
+                put("alertaId",      alertaId)
+                put("dispositivoId", dispositivoId)
+                put("tipoAlerta",    "SOS")
+                put("descripcion",   "Alerta de pánico desde el reloj")
+                put("estado",        "activa")
+                put("fecha",         fmt.format(Date()))
+            }.toString()
+
+            mqtt.publicar("${MqttConfig.TOPIC_ALERTA}/$dispositivoId/sos", payload)
+            Log.d("AlertaWearRepo", "Trigger SOS publicado: $alertaId")
+
+            Pair(alertaId, dispositivoId)
+        } catch (e: Exception) {
+            Log.e("AlertaWearRepo", "Error al enviar SOS: ${e.message}")
+            null
+        }
+    }
+
+    /** Opcional: audio del micrófono del reloj si se implementa. */
+    suspend fun publicarChunkAudio(
+        alertaId: String,
+        dispositivoId: String,
+        base64Chunk: String
+    ) = withContext(Dispatchers.IO) {
+        try {
+            if (!mqtt.estaConectado) mqtt.conectar()
+            val payload = JSONObject().apply {
+                put("id",       UUID.randomUUID().toString())
+                put("alertaId", alertaId)
+                put("audio",    base64Chunk)
+                put("fecha",    fmt.format(Date()))
+            }.toString()
+            mqtt.publicar("${MqttConfig.TOPIC_ALERTA}/$dispositivoId/audio", payload)
+        } catch (e: Exception) {
+            Log.e("AlertaWearRepo", "Error al publicar audio: ${e.message}")
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/repository/VinculacionPrefs.kt">
+package mx.edu.utng.compasos_wearos.data.repository
+
+import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+
+val Context.dataStore by preferencesDataStore(name = "compasos_prefs")
+
+object VinculacionPrefs {
+
+    private val KEY_VINCULADO = booleanPreferencesKey("telefono_vinculado")
+
+    fun estaVinculado(context: Context): Flow<Boolean> =
+        context.dataStore.data.map { prefs ->
+            prefs[KEY_VINCULADO] ?: false
+        }
+
+    suspend fun marcarVinculado(context: Context) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_VINCULADO] = true
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/repository/WearRepository.kt">
+package mx.edu.utng.compasos_wearos.data.repository
+
+import kotlinx.coroutines.flow.Flow
+import mx.edu.utng.compasos_wearos.data.dao.ConfigRelojDao
+import mx.edu.utng.compasos_wearos.data.dao.EventoPendienteDao
+import mx.edu.utng.compasos_wearos.data.dao.HistorialFrecuenciaDao
+import mx.edu.utng.compasos_wearos.data.entity.ConfigReloj
+import mx.edu.utng.compasos_wearos.data.entity.EventoPendiente
+import mx.edu.utng.compasos_wearos.data.entity.HistorialFrecuencia
+
+class WearRepository(
+    private val configDao: ConfigRelojDao,
+    private val eventosDao: EventoPendienteDao,
+    private val frecuenciaDao: HistorialFrecuenciaDao
+) {
+
+    // ── ConfigReloj ───────────────────────────────────────────
+
+    val config: Flow<ConfigReloj?> = configDao.observarConfig()
+
+    suspend fun inicializarConfigSiVacia() {
+        if (configDao.obtenerConfig() == null) {
+            configDao.guardarConfig(ConfigReloj())
+        }
+    }
+
+    suspend fun guardarConfig(config: ConfigReloj) =
+        configDao.guardarConfig(config)
+
+    suspend fun setModoDiscreto(activo: Boolean) =
+        configDao.setModoDiscreto(activo)
+
+    suspend fun setUmbralBpm(bpm: Int) =
+        configDao.setUmbralBpm(bpm)
+
+    suspend fun setSensibilidadCaida(valor: Float) =
+        configDao.setSensibilidadCaida(valor)
+
+    suspend fun vincularDispositivo(id: String, nombre: String) =
+        configDao.setDispositivoVinculado(id, nombre)
+
+    // ── EventoPendiente ───────────────────────────────────────
+
+    suspend fun registrarEvento(
+        tipo: String,
+        latitud: Double? = null,
+        longitud: Double? = null,
+        bpm: Int? = null,
+        rutaAudio: String? = null
+    ): Long = eventosDao.insertar(
+        EventoPendiente(
+            tipoEvento     = tipo,
+            latitud        = latitud,
+            longitud       = longitud,
+            bpmRegistrado  = bpm,
+            rutaAudioLocal = rutaAudio
+        )
+    )
+
+    suspend fun obtenerEventosPendientes(): List<EventoPendiente> =
+        eventosDao.obtenerPendientes()
+
+    suspend fun marcarEventoSincronizado(id: Int) =
+        eventosDao.marcarSincronizado(id)
+
+    suspend fun limpiarEventosSincronizados() =
+        eventosDao.limpiarSincronizados()
+
+    // ── HistorialFrecuencia ───────────────────────────────────
+
+    suspend fun registrarBpm(bpm: Int) {
+        frecuenciaDao.insertar(HistorialFrecuencia(bpm = bpm))
+    }
+
+    suspend fun hayPicoSostenido(
+        ventanaMs: Long = 30_000L,
+        minimoLecturas: Int = 3
+    ): Boolean {
+        val umbral = configDao.obtenerConfig()?.umbralBpmAlerta ?: 130
+        val desde  = System.currentTimeMillis() - ventanaMs
+        val picos  = frecuenciaDao.contarPicosSostenidos(umbral, desde)
+        return picos >= minimoLecturas
+    }
+
+    suspend fun purgarHistorialViejo() {
+        val hace24h = System.currentTimeMillis() - 86_400_000L
+        frecuenciaDao.purgarAnterioresA(hace24h)
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/helper/FeedbackHelper.kt">
+package mx.edu.utng.compasos_wearos.helper
+
+import android.content.Context
+import android.media.MediaPlayer
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import mx.edu.utng.compasos_wearos.R
+
+/**
+ * Centraliza la retroalimentación háptica y sonora.
+ * Compatible con Wear OS (Samsung Galaxy Watch).
+ */
+class FeedbackHelper(context: Context) {
+
+    private val appContext = context.applicationContext
+
+    private val vibrator: Vibrator by lazy {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vm = appContext.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+            vm.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            appContext.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        }
+    }
+
+    /**
+     * Se crea una sola vez y se reutiliza.
+     */
+    private val mediaPlayer: MediaPlayer by lazy {
+        MediaPlayer.create(appContext, R.raw.tick).apply {
+            isLooping = false
+            setVolume(1f, 1f)
+        }
+    }
+
+    /**
+     * Vibración inicial.
+     */
+    fun vibrarDeteccion() {
+        vibrarPatron(longArrayOf(0, 140))
+    }
+
+    /**
+     * Vibración corta.
+     */
+    fun vibrarTick() {
+        vibrarPatron(longArrayOf(0, 45))
+    }
+
+    /**
+     * Reproduce el audio tick.mp3.
+     */
+    fun reproducirTick(modoDiscreto: Boolean) {
+        if (modoDiscreto) return
+
+        runCatching {
+            if (mediaPlayer.isPlaying) {
+                mediaPlayer.pause()
+            }
+
+            mediaPlayer.seekTo(0)
+            mediaPlayer.start()
+        }
+    }
+
+    /**
+     * Aviso inicial.
+     */
+    fun avisarDeteccion(modoDiscreto: Boolean) {
+        vibrarDeteccion()
+
+        if (!modoDiscreto) {
+            reproducirTick(false)
+        }
+    }
+
+    private fun vibrarPatron(patron: LongArray) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(
+                VibrationEffect.createWaveform(
+                    patron,
+                    -1
+                )
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(patron, -1)
+        }
+    }
+
+    /**
+     * Vibración continua.
+     */
+    fun vibrarContinua(duracionMs: Long) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(
+                VibrationEffect.createOneShot(
+                    duracionMs,
+                    VibrationEffect.DEFAULT_AMPLITUDE
+                )
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(duracionMs)
+        }
+    }
+
+    /**
+     * Libera recursos.
+     */
+    fun liberar() {
+        runCatching {
+            if (mediaPlayer.isPlaying) {
+                mediaPlayer.stop()
+            }
+            mediaPlayer.release()
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/presentation/theme/Type.kt">
+package mx.edu.utng.compasos_wearos.presentation.theme
+
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import androidx.wear.compose.material.Typography
+
+val CompaSSOSTypography = Typography(
+    // Título principal — nombre de pantalla
+    title1 = TextStyle(
+        fontSize = 20.sp,
+        fontWeight = FontWeight.Bold
+    ),
+    // Subtítulo — estado del dispositivo
+    title2 = TextStyle(
+        fontSize = 17.sp,
+        fontWeight = FontWeight.Medium
+    ),
+    // Título pequeño — etiquetas
+    title3 = TextStyle(
+        fontSize = 15.sp,
+        fontWeight = FontWeight.Medium
+    ),
+    // Cuerpo principal
+    body1 = TextStyle(
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Normal
+    ),
+    // Cuerpo secundario — descripciones
+    body2 = TextStyle(
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Normal
+    ),
+    // Botones
+    button = TextStyle(
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Bold
+    ),
+    // Texto muy pequeño — metadatos, timestamps
+    caption1 = TextStyle(
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Normal
+    )
+)
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/ui/screens/PantallaAcercaDispositivo.kt">
+package mx.edu.utng.compasos_wearos.ui.screens
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.Smartphone
+import androidx.compose.material.icons.filled.Watch
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.wear.compose.material.*
+import mx.edu.utng.compasos_wearos.data.entity.ConfigReloj
+import mx.edu.utng.compasos_wearos.presentation.theme.*
+import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
+
+@Composable
+fun PantallaAcercaDispositivo(
+    vm: VinculacionViewModel = viewModel()
+) {
+    // Observa la config de Room en tiempo real
+    val config by vm.configReloj.collectAsState()
+
+    PantallaAcercaDispositivoContenido(
+        config          = config ?: ConfigReloj(),
+        modeloReloj     = android.os.Build.MODEL,
+        versionSO       = android.os.Build.VERSION.RELEASE,
+        versionApp      = "1.0.0"
+    )
+}
+
+@Composable
+private fun PantallaAcercaDispositivoContenido(
+    config      : ConfigReloj,
+    modeloReloj : String,
+    versionSO   : String,
+    versionApp  : String
+) {
+    val localConfig = LocalConfiguration.current
+    val screenDp    = localConfig.screenWidthDp.dp
+    val paddingH    = screenDp * 0.08f
+    val paddingV    = screenDp * 0.10f
+
+    val estaVinculado = config.deviceIdVinculado.isNotEmpty()
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Negro)
+    ) {
+        ScalingLazyColumn(
+            modifier              = Modifier.fillMaxSize(),
+            horizontalAlignment   = Alignment.CenterHorizontally,
+            verticalArrangement   = Arrangement.spacedBy(8.dp),
+            contentPadding        = PaddingValues(
+                horizontal = paddingH,
+                vertical   = paddingV
+            )
+        ) {
+
+            // ── Título ───────────────────────────────────────────
+            item {
+                Text(
+                    text       = "Acerca del dispositivo",
+                    style      = MaterialTheme.typography.title2,
+                    color      = Blanco,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // ── Card: Info del reloj ─────────────────────────────
+            item {
+                SeccionInfo(titulo = "Este reloj") {
+                    FilaInfo(
+                        icono     = Icons.Filled.Watch,
+                        colorIcono = AzulClaro,
+                        etiqueta  = "Modelo",
+                        valor     = modeloReloj
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    FilaInfo(
+                        icono      = Icons.Filled.Watch,
+                        colorIcono = AzulClaro,
+                        etiqueta   = "Android",
+                        valor      = "Wear OS $versionSO"
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    FilaInfo(
+                        icono      = Icons.Filled.Watch,
+                        colorIcono = AzulClaro,
+                        etiqueta   = "App",
+                        valor      = "v$versionApp"
+                    )
+                }
+            }
+
+            // ── Card: Vinculación ────────────────────────────────
+            item {
+                SeccionInfo(titulo = "Vinculación") {
+
+                    // Badge de estado
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier          = Modifier.fillMaxWidth()
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier         = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (estaVinculado)
+                                        VerdeConectado.copy(alpha = 0.20f)
+                                    else
+                                        GrisDesactivado.copy(alpha = 0.20f)
+                                )
+                        ) {
+                            Icon(
+                                imageVector    = if (estaVinculado)
+                                    Icons.Filled.Link else Icons.Filled.LinkOff,
+                                contentDescription = "Estado vinculación",
+                                tint           = if (estaVinculado) VerdeConectado else GrisDesactivado,
+                                modifier       = Modifier.size(18.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(10.dp))
+
+                        Column {
+                            Text(
+                                text       = if (estaVinculado) "Vinculado" else "Sin vincular",
+                                style      = MaterialTheme.typography.body1,
+                                color      = if (estaVinculado) VerdeConectado else GrisDesactivado,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            if (estaVinculado) {
+                                Text(
+                                    text  = config.nombreDispositivoVinculado,
+                                    style = MaterialTheme.typography.caption1,
+                                    color = BlancoOpaco
+                                )
+                            }
+                        }
+                    }
+
+                    // Detalles cuando está vinculado
+                    if (estaVinculado) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        FilaInfo(
+                            icono      = Icons.Filled.Smartphone,
+                            colorIcono = AzulSeguro,
+                            etiqueta   = "Teléfono",
+                            valor      = config.nombreDispositivoVinculado
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        FilaInfo(
+                            icono      = Icons.Filled.Link,
+                            colorIcono = AzulSeguro,
+                            etiqueta   = "ID",
+                            valor      = config.deviceIdVinculado.take(12) + "..."
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        FilaValor(
+                            etiqueta = "Última sync",
+                            valor    = formatearFecha(config.ultimaActualizacion)
+                        )
+                    }
+                }
+            }
+
+            // ── Card: Configuración activa ───────────────────────
+            item {
+                SeccionInfo(titulo = "Configuración") {
+                    FilaValor(
+                        etiqueta = "Tiempo pánico",
+                        valor    = "${config.tiempoPanicoMs / 1000} seg"
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    FilaValor(
+                        etiqueta = "Modo discreto",
+                        valor    = if (config.modoDiscreto) "Activado" else "Desactivado"
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    FilaValor(
+                        etiqueta = "Monitoreo",
+                        valor    = "Cada ${config.intervaloMonitoreoSeg} seg"
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    FilaValor(
+                        etiqueta = "Alerta BPM",
+                        valor    = "+${config.umbralBpmAlerta} bpm"
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ── Formatea timestamp a fecha legible ───────────────────────
+private fun formatearFecha(timestamp: Long): String {
+    val sdf = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale.getDefault())
+    return sdf.format(java.util.Date(timestamp))
+}
+
+// ── Componente: sección con título y contenido ───────────────
+@Composable
+private fun SeccionInfo(
+    titulo    : String,
+    contenido : @Composable ColumnScope.() -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color = GrisOscuro, shape = RoundedCornerShape(16.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Text(
+            text       = titulo,
+            style      = MaterialTheme.typography.title3,
+            color      = BlancoOpaco,
+            fontWeight = FontWeight.Medium
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        contenido()
+    }
+}
+
+// ── Componente: fila con ícono, etiqueta y valor ─────────────
+@Composable
+private fun FilaInfo(
+    icono      : androidx.compose.ui.graphics.vector.ImageVector,
+    colorIcono : androidx.compose.ui.graphics.Color,
+    etiqueta   : String,
+    valor      : String
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier          = Modifier.fillMaxWidth()
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier         = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(colorIcono.copy(alpha = 0.15f))
+        ) {
+            Icon(
+                imageVector        = icono,
+                contentDescription = etiqueta,
+                tint               = colorIcono,
+                modifier           = Modifier.size(16.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text     = etiqueta,
+            style    = MaterialTheme.typography.caption1,
+            color    = BlancoOpaco,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text       = valor,
+            style      = MaterialTheme.typography.caption1,
+            color      = Blanco,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+// ── Componente: fila solo etiqueta y valor ───────────────────
+@Composable
+private fun FilaValor(
+    etiqueta : String,
+    valor    : String
+) {
+    Row(
+        modifier            = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text  = etiqueta,
+            style = MaterialTheme.typography.caption1,
+            color = BlancoOpaco
+        )
+        Text(
+            text       = valor,
+            style      = MaterialTheme.typography.caption1,
+            color      = Blanco,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/ui/screens/PantallaAjustes.kt">
+package mx.edu.utng.compasos_wearos.ui.screens
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.dp
+import androidx.wear.compose.material.*
+import mx.edu.utng.compasos_wearos.presentation.theme.*
+
+@Composable
+fun PantallaAjustes(
+    onAjustesAlertaClick: () -> Unit,
+    onAcercaClick: () -> Unit
+) {
+    val config = LocalConfiguration.current
+    val screenDp = config.screenWidthDp.dp
+    val paddingH = screenDp * 0.10f
+    val paddingV = screenDp * 0.12f
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Negro)
+    ) {
+        ScalingLazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(
+                horizontal = paddingH,
+                vertical = paddingV
+            )
+        ) {
+
+            // ── Título ───────────────────────────────────────────
+            item {
+                Text(
+                    text = "Ajustes",
+                    style = MaterialTheme.typography.title2,
+                    color = Blanco
+                )
+            }
+
+            // ── Card: Ajustes de Alerta ──────────────────────────
+            item {
+                TarjetaAjuste(
+                    icono = Icons.Filled.Notifications,
+                    colorIcono = RojoEmergencia,
+                    titulo = "Ajustes de Alerta",
+                    onClick = onAjustesAlertaClick
+                )
+            }
+
+            // ── Card: Acerca del dispositivo ─────────────────────
+            item {
+                TarjetaAjuste(
+                    icono = Icons.Filled.Info,
+                    colorIcono = AzulClaro,
+                    titulo = "Acerca del dispositivo",
+                    onClick = onAcercaClick
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TarjetaAjuste(
+    icono: ImageVector,
+    colorIcono: androidx.compose.ui.graphics.Color,
+    titulo: String,
+    onClick: () -> Unit
+) {
+    Chip(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp),
+        colors = ChipDefaults.chipColors(
+            backgroundColor = GrisOscuro
+        ),
+        shape = RoundedCornerShape(16.dp),
+        label = {
+            Text(
+                text = titulo,
+                style = MaterialTheme.typography.body1,
+                color = Blanco
+            )
+        },
+        icon = {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(colorIcono.copy(alpha = 0.20f))
+            ) {
+                Icon(
+                    imageVector = icono,
+                    contentDescription = titulo,
+                    tint = colorIcono,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    )
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/ui/screens/PantallaAjustesAlerta.kt">
+package mx.edu.utng.compasos_wearos.ui.screens
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.wear.compose.material.*
+import mx.edu.utng.compasos_wearos.presentation.theme.*
+import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
+
+@Composable
+fun PantallaAjustesAlerta(
+    vm: VinculacionViewModel = viewModel()
+) {
+    // Lee config de Room en tiempo real
+    val config by vm.configReloj.collectAsState()
+
+    // Estado local inicializado desde Room
+    var alarmaDiscreta by remember(config) {
+        mutableStateOf(config?.modoDiscreto ?: false)
+    }
+    var tiempoPulsacion by remember(config) {
+        mutableIntStateOf((config?.tiempoPanicoMs ?: 3000) / 1000)
+    }
+
+    val localConfig = LocalConfiguration.current
+    val screenDp = localConfig.screenWidthDp.dp
+    val paddingH = screenDp * 0.08f
+    val paddingV = screenDp * 0.10f
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Negro)
+    ) {
+        ScalingLazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(
+                horizontal = paddingH,
+                vertical = paddingV
+            )
+        ) {
+
+            // ── Título ───────────────────────────────────────────
+            item {
+                Text(
+                    text = "Ajustes de Alerta",
+                    style = MaterialTheme.typography.title2,
+                    color = Blanco,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // ── Card: Alarma discreta ────────────────────────────
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            color = GrisOscuro,
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(GrisMedio)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.NotificationsOff,
+                                contentDescription = "Alarma discreta",
+                                tint = BlancoOpaco,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(10.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Alarma discreta",
+                                style = MaterialTheme.typography.body1,
+                                color = Blanco,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Sin sonido ni vibración",
+                                style = MaterialTheme.typography.caption1,
+                                color = BlancoOpaco
+                            )
+                        }
+
+                        Switch(
+                            checked = alarmaDiscreta,
+                            onCheckedChange = { nuevo ->
+                                alarmaDiscreta = nuevo
+                                vm.setModoDiscreto(nuevo)  // guarda en Room
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor   = Blanco,
+                                checkedTrackColor   = AzulSeguro,
+                                uncheckedThumbColor = Blanco,
+                                uncheckedTrackColor = GrisMedio
+                            )
+                        )
+                    }
+                }
+            }
+
+            // ── Card: Tiempo de pulsación ────────────────────────
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            color = GrisOscuro,
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(RojoEmergencia.copy(alpha = 0.20f))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Timer,
+                                    contentDescription = "Tiempo de pulsación",
+                                    tint = RojoEmergencia,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(10.dp))
+
+                            Column {
+                                Text(
+                                    text = "Tiempo de pulsación",
+                                    style = MaterialTheme.typography.body1,
+                                    color = Blanco,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Para activar el SOS",
+                                    style = MaterialTheme.typography.caption1,
+                                    color = BlancoOpaco
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            // Botón −
+                            Button(
+                                onClick = {
+                                    if (tiempoPulsacion > 1) {
+                                        tiempoPulsacion--
+                                        vm.setTiempoPanico(tiempoPulsacion) // guarda en Room
+                                    }
+                                },
+                                modifier = Modifier.size(36.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    backgroundColor = GrisMedio
+                                )
+                            ) {
+                                Text(
+                                    text = "−",
+                                    style = MaterialTheme.typography.title2,
+                                    color = Blanco
+                                )
+                            }
+
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = "$tiempoPulsacion",
+                                    style = MaterialTheme.typography.title1,
+                                    color = AzulClaro,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "segundos",
+                                    style = MaterialTheme.typography.caption1,
+                                    color = BlancoOpaco
+                                )
+                            }
+
+                            // Botón +
+                            Button(
+                                onClick = {
+                                    if (tiempoPulsacion < 10) {
+                                        tiempoPulsacion++
+                                        vm.setTiempoPanico(tiempoPulsacion) // guarda en Room
+                                    }
+                                },
+                                modifier = Modifier.size(36.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    backgroundColor = GrisMedio
+                                )
+                            ) {
+                                Text(
+                                    text = "+",
+                                    style = MaterialTheme.typography.title2,
+                                    color = Blanco
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/ui/screens/PantallaIngresoCodigo.kt">
+package mx.edu.utng.compasos_wearos.ui.screens
+
+import android.app.RemoteInput
+import android.os.Bundle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.wear.compose.material.*
+import androidx.wear.input.RemoteInputIntentHelper
+import mx.edu.utng.compasos_wearos.data.VinculacionState
+import mx.edu.utng.compasos_wearos.presentation.theme.*
+import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
+
+private const val LARGO_CODIGO = 6
+private const val KEY_CODIGO = "key_codigo_vinculacion"
+
+@Composable
+fun PantallaIngresoCodigo(
+    viewModel: VinculacionViewModel,
+    onCancelar: () -> Unit
+) {
+    val estado by viewModel.estado.collectAsState()
+    var codigoIngresado by remember { mutableStateOf("") }
+
+    // Si el estado pasa a CodigoIncorrecto, limpia el campo para reintentar
+    LaunchedEffect(estado) {
+        if (estado is VinculacionState.CodigoIncorrecto) {
+            codigoIngresado = ""
+        }
+    }
+
+    // ── Launcher del teclado nativo de Wear OS ──────────────────
+    val remoteInputLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val data = result.data
+        val bundle: Bundle? = data?.let { RemoteInput.getResultsFromIntent(it) }
+        val texto = bundle?.getCharSequence(KEY_CODIGO)?.toString()
+
+        if (!texto.isNullOrBlank()) {
+            val limpio = texto.trim().uppercase().take(LARGO_CODIGO)
+            codigoIngresado = limpio
+            if (limpio.isNotEmpty()) {
+                viewModel.ingresarCodigo(limpio)
+            }
+        }
+    }
+
+    fun abrirTecladoNativo() {
+        val intent = RemoteInputIntentHelper.createActionRemoteInputIntent()
+
+        val remoteInput: RemoteInput = RemoteInput.Builder(KEY_CODIGO)
+            .setLabel("Código de vinculación")
+            .build()
+
+        val remoteInputs: List<RemoteInput> = listOf(remoteInput)
+
+        RemoteInputIntentHelper.putRemoteInputsExtra(intent, remoteInputs)
+        remoteInputLauncher.launch(intent)
+    }
+
+    // Abre el teclado automáticamente al entrar a la pantalla
+    LaunchedEffect(Unit) {
+        abrirTecladoNativo()
+    }
+
+    val config = LocalConfiguration.current
+    val screenDp = config.screenWidthDp.dp
+    val paddingH = screenDp * 0.10f
+    val paddingV = screenDp * 0.06f
+
+    val gradienteFondo = Brush.radialGradient(
+        colors = listOf(GrisOscuro, Negro),
+        radius = 600f
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(brush = gradienteFondo)
+    ) {
+        ScalingLazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            contentPadding = PaddingValues(
+                horizontal = paddingH,
+                vertical = paddingV
+            )
+        ) {
+
+            // ── Título ───────────────────────────────────────────
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "Compa",
+                        style = MaterialTheme.typography.title1,
+                        color = Blanco
+                    )
+                    Text(
+                        text = "SOS",
+                        style = MaterialTheme.typography.title1,
+                        color = AzulClaro
+                    )
+                }
+            }
+
+            // ── Instrucción ───────────────────────────────────────
+            item {
+                Text(
+                    text = "Ingresa el código\nque aparece en tu teléfono",
+                    style = MaterialTheme.typography.caption1,
+                    color = BlancoOpaco,
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            // ── Código capturado ────────────────────────────────
+            item {
+                val hayError = estado is VinculacionState.CodigoIncorrecto
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .border(
+                            width = 1.5.dp,
+                            color = if (hayError) RojoOscuro else AzulClaro,
+                            shape = RoundedCornerShape(18.dp)
+                        )
+                        .background(AzulSeguro.copy(alpha = 0.15f))
+                ) {
+                    Text(
+                        text = codigoIngresado.ifEmpty { "· · · · · ·" },
+                        style = MaterialTheme.typography.title3,
+                        color = Blanco,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+
+            // ── Mensaje de error ────────────────────────────────────
+            if (estado is VinculacionState.CodigoIncorrecto) {
+                item {
+                    Text(
+                        text = "Código incorrecto, inténtalo de nuevo",
+                        style = MaterialTheme.typography.caption2,
+                        color = RojoOscuro,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+
+            // ── Botones ───────────────────────────────────────────
+            item {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Button(
+                        onClick = { abrirTecladoNativo() },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(34.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            backgroundColor = AzulSeguro
+                        )
+                    ) {
+                        Text(
+                            text = "Escribir",
+                            style = MaterialTheme.typography.button,
+                            color = Blanco
+                        )
+                    }
+
+                    Button(
+                        onClick = onCancelar,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(34.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            backgroundColor = GrisOscuro
+                        )
+                    ) {
+                        Text(
+                            text = "Cancelar",
+                            style = MaterialTheme.typography.button,
+                            color = Blanco
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/res/drawable/ic_launcher_background.xml">
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#3DDC84"
+        android:pathData="M0,0h108v108h-108z" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M9,0L9,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,0L19,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M29,0L29,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M39,0L39,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M49,0L49,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M59,0L59,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M69,0L69,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M79,0L79,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M89,0L89,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M99,0L99,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,9L108,9"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,19L108,19"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,29L108,29"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,39L108,39"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,49L108,49"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,59L108,59"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,69L108,69"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,79L108,79"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,89L108,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,99L108,99"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,29L89,29"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,39L89,39"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,49L89,49"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,59L89,59"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,69L89,69"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,79L89,79"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M29,19L29,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M39,19L39,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M49,19L49,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M59,19L59,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M69,19L69,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M79,19L79,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+</vector>
+</file>
+
+<file path="app/src/main/res/drawable/ic_launcher_foreground.xml">
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M31,63.928c0,0 6.4,-11 12.1,-13.1c7.2,-2.6 26,-1.4 26,-1.4l38.1,38.1L107,108.928l-32,-1L31,63.928z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endX="85.84757"
+                android:endY="92.4963"
+                android:startX="42.9492"
+                android:startY="49.59793"
+                android:type="linear">
+                <item
+                    android:color="#44000000"
+                    android:offset="0.0" />
+                <item
+                    android:color="#00000000"
+                    android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="nonZero"
+        android:pathData="M65.3,45.828l3.8,-6.6c0.2,-0.4 0.1,-0.9 -0.3,-1.1c-0.4,-0.2 -0.9,-0.1 -1.1,0.3l-3.9,6.7c-6.3,-2.8 -13.4,-2.8 -19.7,0l-3.9,-6.7c-0.2,-0.4 -0.7,-0.5 -1.1,-0.3C38.8,38.328 38.7,38.828 38.9,39.228l3.8,6.6C36.2,49.428 31.7,56.028 31,63.928h46C76.3,56.028 71.8,49.428 65.3,45.828zM43.4,57.328c-0.8,0 -1.5,-0.5 -1.8,-1.2c-0.3,-0.7 -0.1,-1.5 0.4,-2.1c0.5,-0.5 1.4,-0.7 2.1,-0.4c0.7,0.3 1.2,1 1.2,1.8C45.3,56.528 44.5,57.328 43.4,57.328L43.4,57.328zM64.6,57.328c-0.8,0 -1.5,-0.5 -1.8,-1.2s-0.1,-1.5 0.4,-2.1c0.5,-0.5 1.4,-0.7 2.1,-0.4c0.7,0.3 1.2,1 1.2,1.8C66.5,56.528 65.6,57.328 64.6,57.328L64.6,57.328z"
+        android:strokeWidth="1"
+        android:strokeColor="#00000000" />
+</vector>
+</file>
+
+<file path="app/src/main/res/drawable/splash_icon.xml">
+<?xml version="1.0" encoding="utf-8"?>
+
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="48dp"
+        android:height="48dp"
+        android:gravity="center">
+        <shape android:shape="oval">
+            <solid android:color="#FFFFFF" />
+        </shape>
+    </item>
+    <item
+        android:width="40dp"
+        android:height="40dp"
+        android:gravity="center">
+        <vector
+            android:width="24dp"
+            android:height="24dp"
+            android:tint="#000000"
+            android:viewportWidth="24"
+            android:viewportHeight="24">
+            <path
+                android:fillColor="#FF000000"
+                android:pathData="M17.6,11.48 L19.44,8.3a0.63,0.63 0,0 0,-1.09 -0.63l-1.88,3.24a11.43,11.43 0,0 0,-8.94 0L5.65,7.67a0.63,0.63 0,0 0,-1.09 0.63L6.4,11.48A10.81,10.81 0,0 0,1 20L23,20A10.81,10.81 0,0 0,17.6 11.48ZM7,17.25A1.25,1.25 0,1 1,8.25 16,1.25 1.25,0 0,1 7,17.25ZM17,17.25A1.25,1.25 0,1 1,18.25 16,1.25 1.25,0 0,1 17,17.25Z" />
+        </vector>
+    </item>
+</layer-list>
+</file>
+
+<file path="app/src/main/res/mipmap-anydpi/ic_launcher_round.xml">
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
+</file>
+
+<file path="app/src/main/res/mipmap-anydpi/ic_launcher.xml">
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
+</file>
+
+<file path="app/src/main/res/values/strings.xml">
+<resources>
+    <string name="app_name">CompaSOS_WearOS</string>
+    <!--
+    This string is used for square devices and overridden by hello_world in
+    values-round/strings.xml for round devices.
+    -->
+    <string name="hello_world">From the Square world,\nHello, %1$s!</string>
+</resources>
+</file>
+
+<file path="app/src/main/res/values-round/strings.xml">
+<resources>
+    <string name="hello_world">From the Round world,\nHello, %1$s!</string>
+</resources>
+</file>
+
+<file path="app/.gitignore">
+/build
+</file>
+
+<file path="app/lint.xml">
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- Ignore the IconLocation for the Tile preview images -->
+    <issue id="IconLocation">
+        <ignore path="res/drawable/tile_preview.png" />
+        <ignore path="res/drawable-round/tile_preview.png" />
+    </issue>
+</lint>
+</file>
+
+<file path="app/proguard-rules.pro">
+# Add project specific ProGuard rules here.
+# You can control the set of applied configuration files using the
+# proguardFiles setting in build.gradle.
+#
+# For more details, see
+#   http://developer.android.com/guide/developing/tools/proguard.html
+
+# If your project uses WebView with JS, uncomment the following
+# and specify the fully qualified class name to the JavaScript interface
+# class:
+#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
+#   public *;
+#}
+
+# Uncomment this to preserve the line number information for
+# debugging stack traces.
+#-keepattributes SourceFile,LineNumberTable
+
+# If you keep the line number information, uncomment this to
+# hide the original source file name.
+#-renamesourcefileattribute SourceFile
+</file>
+
+<file path="gradle/wrapper/gradle-wrapper.properties">
+#Thu Jun 25 06:23:13 CST 2026
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\://services.gradle.org/distributions/gradle-8.13-bin.zip
+networkTimeout=10000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+</file>
+
+<file path=".gitignore">
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+</file>
+
+<file path="build.gradle.kts">
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+plugins {
+    alias(libs.plugins.android.application) apply false
+    alias(libs.plugins.kotlin.android) apply false
+    alias(libs.plugins.kotlin.compose) apply false
+    id("com.google.devtools.ksp") version "2.0.21-1.0.28" apply false
+}
+</file>
+
+<file path="gradle.properties">
+# Project-wide Gradle settings.
+# IDE (e.g. Android Studio) users:
+# Gradle settings configured through the IDE *will override*
+# any settings specified in this file.
+# For more details on how to configure your build environment visit
+# http://www.gradle.org/docs/current/userguide/build_environment.html
+# Specifies the JVM arguments used for the daemon process.
+# The setting is particularly useful for tweaking memory settings.
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+# When configured, Gradle will run in incubating parallel mode.
+# This option should only be used with decoupled projects. For more details, visit
+# https://developer.android.com/r/tools/gradle-multi-project-decoupled-projects
+# org.gradle.parallel=true
+# AndroidX package structure to make it clearer which packages are bundled with the
+# Android operating system, and which are packaged with your app's APK
+# https://developer.android.com/topic/libraries/support-library/androidx-rn
+android.useAndroidX=true
+# Kotlin code style for this project: "official" or "obsolete":
+kotlin.code.style=official
+# Enables namespacing of each library's R class so that its R class includes only the
+# resources declared in the library itself and none from the library's dependencies,
+# thereby reducing the size of the R class for that library
+android.nonTransitiveRClass=true
+</file>
+
+<file path="gradlew">
+#!/bin/sh
+
+#
+# Copyright © 2015 the original authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+##############################################################################
+#
+#   Gradle start up script for POSIX generated by Gradle.
+#
+#   Important for running:
+#
+#   (1) You need a POSIX-compliant shell to run this script. If your /bin/sh is
+#       noncompliant, but you have some other compliant shell such as ksh or
+#       bash, then to run this script, type that shell name before the whole
+#       command line, like:
+#
+#           ksh Gradle
+#
+#       Busybox and similar reduced shells will NOT work, because this script
+#       requires all of these POSIX shell features:
+#         * functions;
+#         * expansions «$var», «${var}», «${var:-default}», «${var+SET}»,
+#           «${var#prefix}», «${var%suffix}», and «$( cmd )»;
+#         * compound commands having a testable exit status, especially «case»;
+#         * various built-in commands including «command», «set», and «ulimit».
+#
+#   Important for patching:
+#
+#   (2) This script targets any POSIX shell, so it avoids extensions provided
+#       by Bash, Ksh, etc; in particular arrays are avoided.
+#
+#       The "traditional" practice of packing multiple parameters into a
+#       space-separated string is a well documented source of bugs and security
+#       problems, so this is (mostly) avoided, by progressively accumulating
+#       options in "$@", and eventually passing that to Java.
+#
+#       Where the inherited environment variables (DEFAULT_JVM_OPTS, JAVA_OPTS,
+#       and GRADLE_OPTS) rely on word-splitting, this is performed explicitly;
+#       see the in-line comments for details.
+#
+#       There are tweaks for specific operating systems such as AIX, CygWin,
+#       Darwin, MinGW, and NonStop.
+#
+#   (3) This script is generated from the Groovy template
+#       https://github.com/gradle/gradle/blob/HEAD/platforms/jvm/plugins-application/src/main/resources/org/gradle/api/internal/plugins/unixStartScript.txt
+#       within the Gradle project.
+#
+#       You can find Gradle at https://github.com/gradle/gradle/.
+#
+##############################################################################
+
+# Attempt to set APP_HOME
+
+# Resolve links: $0 may be a link
+app_path=$0
+
+# Need this for daisy-chained symlinks.
+while
+    APP_HOME=${app_path%"${app_path##*/}"}  # leaves a trailing /; empty if no leading path
+    [ -h "$app_path" ]
+do
+    ls=$( ls -ld "$app_path" )
+    link=${ls#*' -> '}
+    case $link in             #(
+      /*)   app_path=$link ;; #(
+      *)    app_path=$APP_HOME$link ;;
+    esac
+done
+
+# This is normally unused
+# shellcheck disable=SC2034
+APP_BASE_NAME=${0##*/}
+# Discard cd standard output in case $CDPATH is set (https://github.com/gradle/gradle/issues/25036)
+APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf '%s\n' "$PWD" ) || exit
+
+# Use the maximum available, or set MAX_FD != -1 to use that value.
+MAX_FD=maximum
+
+warn () {
+    echo "$*"
+} >&2
+
+die () {
+    echo
+    echo "$*"
+    echo
+    exit 1
+} >&2
+
+# OS specific support (must be 'true' or 'false').
+cygwin=false
+msys=false
+darwin=false
+nonstop=false
+case "$( uname )" in                #(
+  CYGWIN* )         cygwin=true  ;; #(
+  Darwin* )         darwin=true  ;; #(
+  MSYS* | MINGW* )  msys=true    ;; #(
+  NONSTOP* )        nonstop=true ;;
+esac
+
+CLASSPATH="\\\"\\\""
+
+
+# Determine the Java command to use to start the JVM.
+if [ -n "$JAVA_HOME" ] ; then
+    if [ -x "$JAVA_HOME/jre/sh/java" ] ; then
+        # IBM's JDK on AIX uses strange locations for the executables
+        JAVACMD=$JAVA_HOME/jre/sh/java
+    else
+        JAVACMD=$JAVA_HOME/bin/java
+    fi
+    if [ ! -x "$JAVACMD" ] ; then
+        die "ERROR: JAVA_HOME is set to an invalid directory: $JAVA_HOME
+
+Please set the JAVA_HOME variable in your environment to match the
+location of your Java installation."
+    fi
+else
+    JAVACMD=java
+    if ! command -v java >/dev/null 2>&1
+    then
+        die "ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.
+
+Please set the JAVA_HOME variable in your environment to match the
+location of your Java installation."
+    fi
+fi
+
+# Increase the maximum file descriptors if we can.
+if ! "$cygwin" && ! "$darwin" && ! "$nonstop" ; then
+    case $MAX_FD in #(
+      max*)
+        # In POSIX sh, ulimit -H is undefined. That's why the result is checked to see if it worked.
+        # shellcheck disable=SC2039,SC3045
+        MAX_FD=$( ulimit -H -n ) ||
+            warn "Could not query maximum file descriptor limit"
+    esac
+    case $MAX_FD in  #(
+      '' | soft) :;; #(
+      *)
+        # In POSIX sh, ulimit -n is undefined. That's why the result is checked to see if it worked.
+        # shellcheck disable=SC2039,SC3045
+        ulimit -n "$MAX_FD" ||
+            warn "Could not set maximum file descriptor limit to $MAX_FD"
+    esac
+fi
+
+# Collect all arguments for the java command, stacking in reverse order:
+#   * args from the command line
+#   * the main class name
+#   * -classpath
+#   * -D...appname settings
+#   * --module-path (only if needed)
+#   * DEFAULT_JVM_OPTS, JAVA_OPTS, and GRADLE_OPTS environment variables.
+
+# For Cygwin or MSYS, switch paths to Windows format before running java
+if "$cygwin" || "$msys" ; then
+    APP_HOME=$( cygpath --path --mixed "$APP_HOME" )
+    CLASSPATH=$( cygpath --path --mixed "$CLASSPATH" )
+
+    JAVACMD=$( cygpath --unix "$JAVACMD" )
+
+    # Now convert the arguments - kludge to limit ourselves to /bin/sh
+    for arg do
+        if
+            case $arg in                                #(
+              -*)   false ;;                            # don't mess with options #(
+              /?*)  t=${arg#/} t=/${t%%/*}              # looks like a POSIX filepath
+                    [ -e "$t" ] ;;                      #(
+              *)    false ;;
+            esac
+        then
+            arg=$( cygpath --path --ignore --mixed "$arg" )
+        fi
+        # Roll the args list around exactly as many times as the number of
+        # args, so each arg winds up back in the position where it started, but
+        # possibly modified.
+        #
+        # NB: a `for` loop captures its iteration list before it begins, so
+        # changing the positional parameters here affects neither the number of
+        # iterations, nor the values presented in `arg`.
+        shift                   # remove old arg
+        set -- "$@" "$arg"      # push replacement arg
+    done
+fi
+
+
+# Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
+DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
+
+# Collect all arguments for the java command:
+#   * DEFAULT_JVM_OPTS, JAVA_OPTS, and optsEnvironmentVar are not allowed to contain shell fragments,
+#     and any embedded shellness will be escaped.
+#   * For example: A user cannot expect ${Hostname} to be expanded, as it is an environment variable and will be
+#     treated as '${Hostname}' itself on the command line.
+
+set -- \
+        "-Dorg.gradle.appname=$APP_BASE_NAME" \
+        -classpath "$CLASSPATH" \
+        -jar "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" \
+        "$@"
+
+# Stop when "xargs" is not available.
+if ! command -v xargs >/dev/null 2>&1
+then
+    die "xargs is not available"
+fi
+
+# Use "xargs" to parse quoted args.
+#
+# With -n1 it outputs one arg per line, with the quotes and backslashes removed.
+#
+# In Bash we could simply go:
+#
+#   readarray ARGS < <( xargs -n1 <<<"$var" ) &&
+#   set -- "${ARGS[@]}" "$@"
+#
+# but POSIX shell has neither arrays nor command substitution, so instead we
+# post-process each arg (as a line of input to sed) to backslash-escape any
+# character that might be a shell metacharacter, then use eval to reverse
+# that process (while maintaining the separation between arguments), and wrap
+# the whole thing up as a single "set" statement.
+#
+# This will of course break if any of these variables contains a newline or
+# an unmatched quote.
+#
+
+eval "set -- $(
+        printf '%s\n' "$DEFAULT_JVM_OPTS $JAVA_OPTS $GRADLE_OPTS" |
+        xargs -n1 |
+        sed ' s~[^-[:alnum:]+,./:=@_]~\\&~g; ' |
+        tr '\n' ' '
+    )" '"$@"'
+
+exec "$JAVACMD" "$@"
+</file>
+
+<file path="gradlew.bat">
+@rem
+@rem Copyright 2015 the original author or authors.
+@rem
+@rem Licensed under the Apache License, Version 2.0 (the "License");
+@rem you may not use this file except in compliance with the License.
+@rem You may obtain a copy of the License at
+@rem
+@rem      https://www.apache.org/licenses/LICENSE-2.0
+@rem
+@rem Unless required by applicable law or agreed to in writing, software
+@rem distributed under the License is distributed on an "AS IS" BASIS,
+@rem WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+@rem See the License for the specific language governing permissions and
+@rem limitations under the License.
+@rem
+@rem SPDX-License-Identifier: Apache-2.0
+@rem
+
+@if "%DEBUG%"=="" @echo off
+@rem ##########################################################################
+@rem
+@rem  Gradle startup script for Windows
+@rem
+@rem ##########################################################################
+
+@rem Set local scope for the variables with windows NT shell
+if "%OS%"=="Windows_NT" setlocal
+
+set DIRNAME=%~dp0
+if "%DIRNAME%"=="" set DIRNAME=.
+@rem This is normally unused
+set APP_BASE_NAME=%~n0
+set APP_HOME=%DIRNAME%
+
+@rem Resolve any "." and ".." in APP_HOME to make it shorter.
+for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
+
+@rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
+set DEFAULT_JVM_OPTS="-Xmx64m" "-Xms64m"
+
+@rem Find java.exe
+if defined JAVA_HOME goto findJavaFromJavaHome
+
+set JAVA_EXE=java.exe
+%JAVA_EXE% -version >NUL 2>&1
+if %ERRORLEVEL% equ 0 goto execute
+
+echo. 1>&2
+echo ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH. 1>&2
+echo. 1>&2
+echo Please set the JAVA_HOME variable in your environment to match the 1>&2
+echo location of your Java installation. 1>&2
+
+goto fail
+
+:findJavaFromJavaHome
+set JAVA_HOME=%JAVA_HOME:"=%
+set JAVA_EXE=%JAVA_HOME%/bin/java.exe
+
+if exist "%JAVA_EXE%" goto execute
+
+echo. 1>&2
+echo ERROR: JAVA_HOME is set to an invalid directory: %JAVA_HOME% 1>&2
+echo. 1>&2
+echo Please set the JAVA_HOME variable in your environment to match the 1>&2
+echo location of your Java installation. 1>&2
+
+goto fail
+
+:execute
+@rem Setup the command line
+
+set CLASSPATH=
+
+
+@rem Execute Gradle
+"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" -jar "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" %*
+
+:end
+@rem End local scope for the variables with windows NT shell
+if %ERRORLEVEL% equ 0 goto mainEnd
+
+:fail
+rem Set variable GRADLE_EXIT_CONSOLE if you need the _script_ return code instead of
+rem the _cmd.exe /c_ return code!
+set EXIT_CODE=%ERRORLEVEL%
+if %EXIT_CODE% equ 0 set EXIT_CODE=1
+if not ""=="%GRADLE_EXIT_CONSOLE%" exit %EXIT_CODE%
+exit /b %EXIT_CODE%
+
+:mainEnd
+if "%OS%"=="Windows_NT" endlocal
+
+:omega
+</file>
+
+<file path="settings.gradle.kts">
+pluginManagement {
+    repositories {
+        google {
+            content {
+                includeGroupByRegex("com\\.android.*")
+                includeGroupByRegex("com\\.google.*")
+                includeGroupByRegex("androidx.*")
+            }
+        }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "CompaSOS_WearOS"
+include(":app")
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/config/mqtt/MqttConfig.kt">
+package mx.edu.utng.compasos_wearos.config.mqtt
+
+object MqttConfig {
+    /**
+     * Emulador Android  → 10.0.2.2  (mapea al localhost de tu máquina)
+     * Dispositivo físico → IP local de tu máquina en la misma WiFi
+     *                      Ejemplo: "tcp://192.168.1.100:1883"
+     */
+    const val BROKER_URL = "tcp://192.168.1.102:1883"
+
+    const val TIMEOUT_CONEXION = 10   // segundos
+    const val KEEP_ALIVE       = 60   // segundos
+    const val QOS              = 1    // At least once
+
+    // Topics
+    const val TOPIC_VINCULACION = "compasos/vinculacion"
+    const val TOPIC_DISPOSITIVO = "compasos/dispositivo"
+    const val TOPIC_ALERTA = "compasos/alerta"
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/entity/ConfigReloj.kt">
+package mx.edu.utng.compasos_wearos.data.entity
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+
+@Entity(tableName = "config_reloj")
+data class ConfigReloj(
+    @PrimaryKey
+    val id: Int = 1,
+    val tiempoPanicoMs: Int = 3000,
+    val tripleTabActivado: Boolean = true,
+    val deteccionCaidasActiva: Boolean = true,
+    val sensibilidadCaida: Float = 2.5f,
+    val umbralBpmAlerta: Int = 130,
+    val intervaloMonitoreoSeg: Int = 10,
+    val audioAlActivarEmergencia: Boolean = true,
+    val duracionAudioSeg: Int = 30,
+    val modoDiscreto: Boolean = true,
+    val deviceIdVinculado: String = "",
+    val nombreDispositivoVinculado: String = "",
+    val codigoVinculacion: String = "",      // código MQTT pendiente de confirmar
+    val ultimaActualizacion: Long = System.currentTimeMillis()
+)
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/repository/VinculacionRepository.kt">
+package mx.edu.utng.compasos_wearos.data.repository
+
+import android.content.Context
+import android.os.Build
+import android.provider.Settings
+import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import mx.edu.utng.compasos_wearos.config.mqtt.MqttConfig
+import mx.edu.utng.compasos_wearos.config.mqtt.MqttManager
+import mx.edu.utng.compasos_wearos.data.VinculacionEvent
+import mx.edu.utng.compasos_wearos.data.VinculacionManager
+import mx.edu.utng.compasos_wearos.data.VinculacionState
+import mx.edu.utng.compasos_wearos.data.dao.ConfigRelojDao
+import mx.edu.utng.compasos_wearos.data.db.WearDatabase
+import mx.edu.utng.compasos_wearos.data.entity.ConfigReloj
+import org.json.JSONObject
+
+class VinculacionRepository(private val context: Context) {
+
+    private val dao: ConfigRelojDao =
+        WearDatabase.getInstance(context).configRelojDao()
+
+    private val mqtt = MqttManager()
+
+    val vinculacionManager = VinculacionManager()
+
+    private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun observarConfig(): Flow<ConfigReloj?> = dao.observarConfig()
+
+    suspend fun guardarVinculacion(nodeId: String, nombreTelefono: String) {
+        val configActual = dao.obtenerConfig() ?: ConfigReloj()
+        dao.guardarConfig(
+            configActual.copy(
+                deviceIdVinculado = nodeId,
+                nombreDispositivoVinculado = nombreTelefono,
+                codigoVinculacion = "",
+                ultimaActualizacion = System.currentTimeMillis()
+            )
+        )
+    }
+
+    suspend fun borrarVinculacion() {
+        val configActual = dao.obtenerConfig() ?: ConfigReloj()
+        dao.guardarConfig(
+            configActual.copy(
+                deviceIdVinculado = "",
+                nombreDispositivoVinculado = "",
+                codigoVinculacion = "",
+                ultimaActualizacion = System.currentTimeMillis()
+            )
+        )
+    }
+
+    suspend fun detectarYGuardarTelefono(context: Context) {
+        vinculacionManager.detectarTelefonoConectado(context)
+        val estadoActual = vinculacionManager.estado.value
+        if (estadoActual is VinculacionState.SolicitudRecibida && estadoActual.codigoEsperado == null) {
+            guardarVinculacion(
+                nodeId = estadoActual.nombreTelefono,
+                nombreTelefono = estadoActual.nombreTelefono
+            )
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════
+    // FLUJO MQTT CON CÓDIGO
+    // ══════════════════════════════════════════════════════════
+
+    suspend fun escucharSolicitudesVinculacion() {
+        withContext(Dispatchers.IO) {
+            try {
+                if (!mqtt.estaConectado) mqtt.conectar()
+
+                mqtt.suscribir("${MqttConfig.TOPIC_VINCULACION}/+/solicitud") { _, payload ->
+                    repoScope.launch {
+                        try {
+                            val json      = JSONObject(payload)
+                            val codigo    = json.getString("code")
+                            val usuarioId = json.optString("usuarioId", "")
+
+                            guardarCodigoPendiente(codigo)
+
+                            vinculacionManager.procesarEvento(
+                                VinculacionEvent.SolicitudMqttRecibida(codigo, usuarioId)
+                            )
+                        } catch (e: Exception) {
+                            // payload inválido, se ignora
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("VinculacionRepo", "No se pudo conectar al broker: ${e.message}")
+                vinculacionManager.error("Sin conexión al broker MQTT")
+            }
+        }
+    }
+
+    private suspend fun guardarCodigoPendiente(codigo: String) {
+        if (dao.obtenerConfig() == null) dao.guardarConfig(ConfigReloj())
+        dao.setCodigoVinculacion(codigo)
+    }
+
+    /**
+     * Valida el código tecleado contra el guardado en Room.
+     *
+     * CORREGIDO: ya no depende de que el estado actual sea exactamente
+     * SolicitudRecibida. Antes, si el primer intento fallaba (estado pasaba
+     * a CodigoIncorrecto), cualquier reintento —aunque el código fuera
+     * correcto— se rechazaba de inmediato por esta guarda, sin comparar
+     * nada. Ahora solo depende de que exista un código pendiente en Room.
+     */
+    suspend fun confirmarCodigo(codigoIngresado: String): Boolean {
+        val codigoGuardado = dao.obtenerConfig()?.codigoVinculacion.orEmpty()
+
+        if (codigoGuardado.isBlank()) {
+            // No hay ninguna solicitud pendiente
+            return false
+        }
+
+        val coincide = codigoIngresado.trim().equals(codigoGuardado.trim(), ignoreCase = true)
+
+        if (!coincide) {
+            vinculacionManager.procesarEvento(VinculacionEvent.CodigoIncorrecto)
+            return false
+        }
+
+        return withContext(Dispatchers.IO) {
+            try {
+                // Por si el cliente se desconectó (p. ej. al abrir el
+                // teclado nativo en otra Activity), reconecta antes de publicar.
+                if (!mqtt.estaConectado) mqtt.conectar()
+
+                val deviceId = "wear_${Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)}"
+
+                val respuesta = JSONObject().apply {
+                    put("deviceId", deviceId)
+                    put("tipo", "reloj")
+                    put("modelo", Build.MODEL)
+                    put("fabricante", Build.MANUFACTURER)
+                }.toString()
+
+                mqtt.publicar("${MqttConfig.TOPIC_VINCULACION}/$codigoGuardado/respuesta", respuesta)
+
+                guardarVinculacion(nodeId = deviceId, nombreTelefono = "Teléfono vinculado")
+                vinculacionManager.vinculacionExitosa()
+                true
+            } catch (e: Exception) {
+                Log.e("VinculacionRepo", "No se pudo enviar la respuesta: ${e.message}")
+                vinculacionManager.error("Sin conexión, inténtalo de nuevo")
+                false
+            }
+        }
+    }
+
+    suspend fun cancelarVinculacionPendiente() {
+        dao.limpiarCodigoVinculacion()
+        vinculacionManager.procesarEvento(VinculacionEvent.Cancelar)
+    }
+
+    suspend fun setModoDiscreto(activo: Boolean) {
+        if (dao.obtenerConfig() == null) dao.guardarConfig(ConfigReloj())
+        dao.setModoDiscreto(activo)
+    }
+
+    suspend fun setTiempoPanico(segundos: Int) {
+        if (dao.obtenerConfig() == null) dao.guardarConfig(ConfigReloj())
+        dao.setTiempoPanico(segundos * 1000)
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/VinculacionEvent.kt">
+package mx.edu.utng.compasos_wearos.data
+
+sealed class VinculacionEvent {
+    object BuscarReloj : VinculacionEvent()
+    data class SolicitudVinculacion(val nombreTelefono: String) : VinculacionEvent()
+    object Confirmar : VinculacionEvent()
+    object Cancelar : VinculacionEvent()
+    object Desconectar : VinculacionEvent()
+
+    // ── NUEVO: flujo MQTT con código ──────────────────────────
+    data class SolicitudMqttRecibida(val codigo: String, val usuarioId: String) : VinculacionEvent()
+    object CodigoIncorrecto : VinculacionEvent()
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/VinculacionManager.kt">
+package mx.edu.utng.compasos_wearos.data
+
+import android.content.Context
+import com.google.android.gms.wearable.Wearable
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.tasks.await
+
+class VinculacionManager {
+
+    private val _estado = MutableStateFlow<VinculacionState>(VinculacionState.Esperando)
+    val estado: StateFlow<VinculacionState> = _estado.asStateFlow()
+
+    suspend fun detectarTelefonoConectado(context: Context) {
+        try {
+            val nodos = Wearable.getNodeClient(context).connectedNodes.await()
+            val telefono = nodos.firstOrNull()
+            if (telefono != null) {
+                procesarEvento(VinculacionEvent.SolicitudVinculacion(telefono.displayName))
+            }
+        } catch (e: Exception) {
+            // Sin conexión todavía
+        }
+    }
+
+    fun procesarEvento(evento: VinculacionEvent) {
+        when (evento) {
+            is VinculacionEvent.BuscarReloj ->
+                _estado.value = VinculacionState.Esperando
+
+            is VinculacionEvent.SolicitudVinculacion ->
+                _estado.value = VinculacionState.SolicitudRecibida(evento.nombreTelefono)
+
+            is VinculacionEvent.Confirmar ->
+                _estado.value = VinculacionState.Vinculando
+
+            is VinculacionEvent.Cancelar ->
+                _estado.value = VinculacionState.Esperando
+
+            is VinculacionEvent.Desconectar ->
+                _estado.value = VinculacionState.Esperando
+
+            // ── NUEVO ──────────────────────────────────────────
+            is VinculacionEvent.SolicitudMqttRecibida ->
+                _estado.value = VinculacionState.SolicitudRecibida(
+                    nombreTelefono = "Teléfono",
+                    codigoEsperado = evento.codigo,
+                    usuarioId = evento.usuarioId
+                )
+
+            is VinculacionEvent.CodigoIncorrecto -> {
+                val actual = _estado.value
+                if (actual is VinculacionState.SolicitudRecibida && actual.codigoEsperado != null) {
+                    _estado.value = VinculacionState.CodigoIncorrecto(actual.codigoEsperado, actual.usuarioId)
+                }
+            }
+        }
+    }
+
+    fun vinculacionExitosa() {
+        _estado.value = VinculacionState.Vinculado
+    }
+
+    fun error(mensaje: String) {
+        _estado.value = VinculacionState.Error(mensaje)
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/VinculacionState.kt">
+package mx.edu.utng.compasos_wearos.data
+
+sealed class VinculacionState {
+
+    object Esperando : VinculacionState()
+
+    /**
+     * codigoEsperado != null  → viene del flujo MQTT, el usuario debe teclearlo
+     * codigoEsperado == null  → viene del flujo Node/Wearable (detección automática)
+     */
+    data class SolicitudRecibida(
+        val nombreTelefono: String,
+        val codigoEsperado: String? = null,
+        val usuarioId: String? = null
+    ) : VinculacionState()
+
+    data class CodigoIncorrecto(
+        val codigoEsperado: String,
+        val usuarioId: String?
+    ) : VinculacionState()
+
+    object Vinculando : VinculacionState()
+    object Vinculado : VinculacionState()
+    data class Error(val mensaje: String) : VinculacionState()
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/presentation/theme/Color.kt">
+package mx.edu.utng.compasos_wearos.presentation.theme
+
+import androidx.compose.ui.graphics.Color
+
+// Primarios — botón SOS / acción crítica
+val RojoEmergencia    = Color(0xFF1565C0)  // azul profundo (botón SOS de la imagen)
+val RojoOscuro        = Color(0xFF0D47A1)  // variante oscura del botón SOS
+
+// Secundarios — vinculación, acciones
+val AzulSeguro        = Color(0xFF1E3A5F)  // azul medio oscuro (superficie activa)
+val AzulClaro         = Color(0xFF29B6F6)  // cian eléctrico — acento "SOS" del logo, íconos
+
+// Fondos
+val Negro             = Color(0xFF0A1628)  // fondo principal (azul marino muy oscuro)
+val GrisOscuro        = Color(0xFF0D1F3C)  // superficie de cards
+val GrisMedio         = Color(0xFF162B4D)  // elementos secundarios
+
+// Estado
+val VerdeConectado    = Color(0xFF43A047)  // "Activo" — igual que la imagen
+val AmarilloAlerta    = Color(0xFFFDD835)  // advertencia
+val GrisDesactivado   = Color(0xFF37506B)  // elementos inactivos
+
+// Texto
+val Blanco            = Color(0xFFFFFFFF)
+val BlancoOpaco       = Color(0xB3FFFFFF)  // texto secundario
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/presentation/theme/Theme.kt">
+package mx.edu.utng.compasos_wearos.presentation.theme
+
+import androidx.compose.runtime.Composable
+import androidx.wear.compose.material.MaterialTheme
+
+@Composable
+fun CompaSOSTheme(
+    content: @Composable () -> Unit
+) {
+    MaterialTheme(
+        colors = androidx.wear.compose.material.Colors(
+            primary          = RojoEmergencia,   // azul profundo — botón SOS
+            primaryVariant   = RojoOscuro,        // variante oscura
+            secondary        = AzulClaro,         // cian eléctrico — íconos / logo
+            secondaryVariant = AzulSeguro,        // azul medio — vinculación
+            background       = Negro,             // azul marino muy oscuro
+            surface          = GrisOscuro,        // cards / superficies
+            error            = AmarilloAlerta,    // advertencia
+            onPrimary        = Blanco,
+            onSecondary      = Blanco,
+            onBackground     = Blanco,
+            onSurface        = Blanco,
+            onError          = Negro
+        ),
+        typography = CompaSSOSTypography,
+        content    = content
+    )
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/presentation/MainActivity.kt">
+package mx.edu.utng.compasos_wearos.presentation
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import mx.edu.utng.compasos_wearos.R
+import mx.edu.utng.compasos_wearos.navigation.AppNav
+import mx.edu.utng.compasos_wearos.presentation.theme.CompaSOSTheme
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
+        super.onCreate(savedInstanceState)
+        setTheme(R.style.AppTheme)
+        setContent {
+            CompaSOSTheme {
+                AppNav()
+            }
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/services/MovimientoDetector.kt">
+package mx.edu.utng.compasos_wearos.services
+
+import android.content.Context
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlin.math.sqrt
+
+class MovimientoDetector(private val context: Context) : SensorEventListener {
+
+    companion object {
+        private const val UMBRAL_G_DEFAULT = 15f
+        private const val VENTANA_MS       = 3_000L
+        private const val HITS_NECESARIOS  = 4
+        private const val COOLDOWN_MS      = 30_000L
+        private const val WARMUP_MS        = 3_000L
+    }
+
+    private val sensorManager by lazy {
+        context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    }
+    private val acelerometro: Sensor? by lazy {
+        sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+    }
+
+    private val _movimientoErratico = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val movimientoErratico = _movimientoErratico.asSharedFlow()
+
+    private var umbralG       = UMBRAL_G_DEFAULT
+    private var escuchando    = false
+    private var ultimaEmision = 0L
+    private var iniciadoEn    = 0L
+    private val picos         = ArrayDeque<Long>()
+
+    fun iniciar(umbral: Float = UMBRAL_G_DEFAULT) {
+        if (escuchando) return
+        umbralG       = umbral.coerceAtLeast(18f)
+        escuchando    = true
+        ultimaEmision = 0L
+        iniciadoEn    = System.currentTimeMillis()
+        picos.clear()
+        acelerometro?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
+    }
+
+    fun detener() {
+        if (!escuchando) return
+        sensorManager.unregisterListener(this)
+        escuchando = false
+        picos.clear()
+    }
+
+    override fun onSensorChanged(event: SensorEvent) {
+        if (event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
+
+        val ahora = System.currentTimeMillis()
+        if (ahora - iniciadoEn < WARMUP_MS) return
+
+        val x   = event.values[0]
+        val y   = event.values[1]
+        val z   = event.values[2]
+        val mag = sqrt(x * x + y * y + z * z)
+
+        if (mag > umbralG) {
+            if (ahora - ultimaEmision < COOLDOWN_MS) return
+            picos.addLast(ahora)
+            while (picos.isNotEmpty() && ahora - picos.first() > VENTANA_MS) {
+                picos.removeFirst()
+            }
+            if (picos.size >= HITS_NECESARIOS) {
+                picos.clear()
+                ultimaEmision = ahora
+                _movimientoErratico.tryEmit(Unit)
+            }
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) = Unit
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/ui/screens/MovimientoInusualScreen.kt">
+package mx.edu.utng.compasos_wearos.ui.screens
+
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.material.*
+import kotlinx.coroutines.delay
+import mx.edu.utng.compasos_wearos.helper.FeedbackHelper
+import mx.edu.utng.compasos_wearos.presentation.theme.*
+import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
+
+@Composable
+fun MovimientoInusualScreen(
+    onEnviar:   () -> Unit,
+    onCancelar: () -> Unit,
+    vm:         VinculacionViewModel = viewModel()
+) {
+    val totalSeg = 10  // Auto-envía en 10 segundos
+    var segsRestantes by remember { mutableIntStateOf(totalSeg) }
+    val progreso = remember { Animatable(1f) }
+
+    val context = LocalContext.current
+    val feedback = remember { FeedbackHelper(context) }
+
+    val config by vm.configReloj.collectAsState()
+    val modoDiscreto = config?.modoDiscreto ?: false
+
+    DisposableEffect(Unit) {
+        onDispose { feedback.liberar() }
+    }
+
+    // ── Aviso inicial al entrar a esta pantalla ────────────────
+    LaunchedEffect(Unit) {
+        feedback.avisarDeteccion(modoDiscreto)
+    }
+
+    LaunchedEffect(Unit) {
+        progreso.animateTo(
+            targetValue   = 0f,
+            animationSpec = tween(
+                durationMillis = totalSeg * 1000,
+                easing         = LinearEasing
+            )
+        )
+    }
+
+    // ── Conteo + vibración/sonido al ritmo de los segundos ─────
+    LaunchedEffect(Unit) {
+        while (segsRestantes > 0) {
+            delay(1000)
+            segsRestantes--
+            feedback.vibrarTick()
+            feedback.reproducirTick(modoDiscreto)
+        }
+        onEnviar()
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Negro)
+    ) {
+        val d = minOf(maxWidth, maxHeight)
+
+        ScalingLazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            state = rememberScalingLazyListState(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy((d.value * 0.025f).dp),
+            contentPadding = PaddingValues(
+                horizontal = d * 0.10f,
+                vertical   = d * 0.08f
+            )
+        ) {
+
+            // ── Ícono de advertencia ───────────────────────────
+            item {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size((d.value * 0.20f).dp)
+                        .clip(CircleShape)
+                        .background(AmarilloAlerta.copy(alpha = 0.18f))
+                ) {
+                    Icon(
+                        imageVector        = Icons.Filled.Warning,
+                        contentDescription = "Advertencia",
+                        tint               = AmarilloAlerta,
+                        modifier           = Modifier.size((d.value * 0.12f).dp)
+                    )
+                }
+            }
+
+            // ── Título ───────────────────────────────────────
+            item {
+                Text(
+                    text       = "Movimiento inusual\ndetectado",
+                    fontSize   = (d.value * 0.082f).sp,
+                    color      = Blanco,
+                    fontWeight = FontWeight.Bold,
+                    textAlign  = TextAlign.Center,
+                    lineHeight = (d.value * 0.10f).sp
+                )
+            }
+
+            // ── Subtítulo ──────────────────────────────────────
+            item {
+                Text(
+                    text       = "¿Enviar alerta?",
+                    fontSize   = (d.value * 0.055f).sp,
+                    color      = BlancoOpaco,
+                    textAlign  = TextAlign.Center,
+                    lineHeight = (d.value * 0.072f).sp
+                )
+            }
+
+            // ── Temporizador circular ───────────────────────────
+            item {
+                Box(contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(
+                        progress       = progreso.value,
+                        modifier       = Modifier.size((d.value * 0.19f).dp),
+                        strokeWidth    = (d.value * 0.014f).dp,
+                        indicatorColor = AmarilloAlerta,
+                        trackColor     = GrisMedio
+                    )
+                    Text(
+                        text       = "$segsRestantes",
+                        fontSize   = (d.value * 0.090f).sp,
+                        color      = Blanco,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // ── Botones ──────────────────────────────────────
+            item {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy((d.value * 0.03f).dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Button(
+                        onClick  = onCancelar,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height((d.value * 0.13f).dp),
+                        colors = ButtonDefaults.buttonColors(
+                            backgroundColor = GrisMedio
+                        )
+                    ) {
+                        Text("No", fontSize = (d.value * 0.062f).sp, color = Blanco)
+                    }
+                    Button(
+                        onClick  = onEnviar,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height((d.value * 0.13f).dp),
+                        colors = ButtonDefaults.buttonColors(
+                            backgroundColor = RojoEmergencia
+                        )
+                    ) {
+                        Text("Enviar", fontSize = (d.value * 0.062f).sp, color = Blanco)
+                    }
+                }
+            }
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/res/values/styles.xml">
+<resources>
+
+    <!-- Tema principal con pantalla completa -->
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+
+    <!-- Tema splash que hereda del principal -->
+    <style name="MainActivityTheme.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@android:color/black</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
+        <item name="postSplashScreenTheme">@style/AppTheme</item>
+    </style>
+
+</resources>
+</file>
+
+<file path="gradle/libs.versions.toml">
+[versions]
+agp = "8.13.2"
+kotlin = "2.0.21"
+playServicesWearable = "20.0.1"
+composeBom = "2024.09.00"
+composeMaterial = "1.2.1"
+composeFoundation = "1.2.1"
+wearToolingPreview = "1.0.0"
+activityCompose = "1.13.0"
+coreSplashscreen = "1.0.1"
+composeMaterial3 = "1.6.2"
+composeNavigation = "1.6.2"
+uiGraphics = "1.11.3"
+
+
+[libraries]
+play-services-wearable = { group = "com.google.android.gms", name = "play-services-wearable", version.ref = "playServicesWearable" }
+compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+ui = { group = "androidx.compose.ui", name = "ui" }
+ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
+ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+compose-material = { group = "androidx.wear.compose", name = "compose-material", version.ref = "composeMaterial" }
+compose-foundation = { group = "androidx.wear.compose", name = "compose-foundation", version.ref = "composeFoundation" }
+wear-tooling-preview = { group = "androidx.wear", name = "wear-tooling-preview", version.ref = "wearToolingPreview" }
+activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "coreSplashscreen" }
+compose-material3 = { group = "androidx.wear.compose", name = "compose-material3", version.ref = "composeMaterial3" }
+compose-navigation = { group = "androidx.wear.compose", name = "compose-navigation", version.ref = "composeNavigation" }
+androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics", version.ref = "uiGraphics" }
+
+
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/data/dao/ConfigRelojDao.kt">
+package mx.edu.utng.compasos_wearos.data.dao
+
+import androidx.room.*
+import kotlinx.coroutines.flow.Flow
+import mx.edu.utng.compasos_wearos.data.entity.ConfigReloj
+
+@Dao
+interface ConfigRelojDao {
+
+    @Query("SELECT * FROM config_reloj WHERE id = 1")
+    fun observarConfig(): Flow<ConfigReloj?>
+
+    @Query("SELECT * FROM config_reloj WHERE id = 1")
+    suspend fun obtenerConfig(): ConfigReloj?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun guardarConfig(config: ConfigReloj)
+
+    @Query("UPDATE config_reloj SET umbralBpmAlerta = :bpm WHERE id = 1")
+    suspend fun setUmbralBpm(bpm: Int)
+
+    @Query("UPDATE config_reloj SET sensibilidadCaida = :valor WHERE id = 1")
+    suspend fun setSensibilidadCaida(valor: Float)
+
+    @Query("UPDATE config_reloj SET deviceIdVinculado = :id, nombreDispositivoVinculado = :nombre WHERE id = 1")
+    suspend fun setDispositivoVinculado(id: String, nombre: String)
+
+    @Query("UPDATE config_reloj SET modoDiscreto = :activo WHERE id = 1")
+    suspend fun setModoDiscreto(activo: Boolean)
+
+    @Query("UPDATE config_reloj SET tiempoPanicoMs = :ms WHERE id = 1")
+    suspend fun setTiempoPanico(ms: Int)
+
+    // ── NUEVO: código de vinculación MQTT pendiente ──────────
+    @Query("UPDATE config_reloj SET codigoVinculacion = :codigo WHERE id = 1")
+    suspend fun setCodigoVinculacion(codigo: String)
+
+    @Query("UPDATE config_reloj SET codigoVinculacion = '' WHERE id = 1")
+    suspend fun limpiarCodigoVinculacion()
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/ui/screens/AlertaEnviadaScreen.kt">
+package mx.edu.utng.compasos_wearos.ui.screens
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.wear.compose.material.Icon
+import androidx.wear.compose.material.MaterialTheme
+import androidx.wear.compose.material.Text
+import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import mx.edu.utng.compasos_wearos.helper.FeedbackHelper
+
+@Composable
+fun AlertaEnviadaScreen() {
+    // Estado de scroll optimizado para pantallas redondas de Wear OS
+    val listState = rememberScalingLazyListState()
+
+    val context = LocalContext.current
+    val feedback = remember { FeedbackHelper(context) }
+    DisposableEffect(Unit) {
+        onDispose { feedback.liberar() }
+    }
+
+    // ── Vibración continua de 2 segundos al entrar ────────────
+    LaunchedEffect(Unit) {
+        feedback.vibrarContinua(2000)
+    }
+
+    // Colores extraídos exactamente de la imagen proporcionada
+    val rojoAlertaTexto = Color(0xFFE57373)      // Rojo/Salmón del título "Alerta enviada"
+    val fondoCardBloqueado = Color(0xFF1E1012)   // Fondo guinda/rojizo oscuro
+    val bordeCardBloqueado = Color(0xFF3E1F22)   // Borde sutil guinda
+    val fondoCardAudio = Color(0xFF0F1A14)       // Fondo verde muy oscuro
+    val bordeCardAudio = Color(0xFF1B3224)       // Borde sutil verde
+    val verdeAudioTexto = Color(0xFF81C784)      // Verde del texto de audio
+
+
+    ScalingLazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colors.background), // Tu color Negro (0xFF0A1628)
+        state = listState,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(top = 20.dp, start = 10.dp, end = 10.dp, bottom = 20.dp)
+    ) {
+
+        // 1. Icono de Check Superior
+        item {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .border(3.dp, rojoAlertaTexto, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = "Confirmado",
+                    tint = rojoAlertaTexto,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+
+        // 2. Título de Alerta
+        item {
+            Text(
+                text = "Alerta enviada",
+                color = rojoAlertaTexto,
+                style = MaterialTheme.typography.title1.copy(
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Medium
+                ),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+
+        // 3. Burbujas de Familiares (MA, LM, SF)
+        item {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(vertical = 4.dp)
+            ) {
+
+            }
+        }
+
+        // 4. Card: Reloj Bloqueado
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth(0.9f)
+                    .background(fondoCardBloqueado, RoundedCornerShape(16.dp))
+                    .border(1.dp, bordeCardBloqueado, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Lock,
+                    contentDescription = "Bloqueado",
+                    tint = rojoAlertaTexto,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "Reloj bloqueado.",
+                        color = rojoAlertaTexto,
+                        style = MaterialTheme.typography.body2.copy(fontWeight = FontWeight.Medium)
+                    )
+                    Text(
+                        text = "No se puede cancelar.",
+                        color = rojoAlertaTexto.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.body2.copy(fontSize = 11.sp)
+                    )
+                }
+            }
+        }
+
+        // 5. Card: Enviando Audio
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth(0.9f)
+                    .background(fondoCardAudio, RoundedCornerShape(16.dp))
+                    .border(1.dp, bordeCardAudio, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.VolumeUp,
+                    contentDescription = "Audio",
+                    tint = verdeAudioTexto,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text(
+                        text = "Enviando audio en",
+                        color = verdeAudioTexto,
+                        style = MaterialTheme.typography.body2.copy(fontWeight = FontWeight.Medium)
+                    )
+                    Text(
+                        text = "tiempo real a tus familiares...",
+                        color = verdeAudioTexto.copy(alpha = 0.8f),
+                        style = MaterialTheme.typography.body2.copy(fontSize = 11.sp)
+                    )
+                }
+            }
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/ui/screens/PantallaInicio.kt">
+package mx.edu.utng.compasos_wearos.ui.screens
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.wear.compose.material.*
+import mx.edu.utng.compasos_wearos.presentation.theme.*
+
+@Composable
+fun PantallaInicio(
+    onEmpezarClick: () -> Unit
+) {
+    val config = LocalConfiguration.current
+    val screenDp = config.screenWidthDp.dp
+    val paddingH = screenDp * 0.12f
+    val paddingV = screenDp * 0.08f
+
+    val gradienteFondo = Brush.radialGradient(
+        colors = listOf(GrisOscuro, Negro),
+        radius = 600f
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(brush = gradienteFondo)
+    ) {
+        ScalingLazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(
+                horizontal = paddingH,
+                vertical = paddingV
+            )
+        ) {
+
+            // ── Título ───────────────────────────────────────────
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "Compa",
+                        style = MaterialTheme.typography.title1,
+                        color = Blanco
+                    )
+                    Text(
+                        text = "SOS",
+                        style = MaterialTheme.typography.title1,
+                        color = AzulClaro
+                    )
+                }
+            }
+
+            // ── Ícono escudo con anillo ──────────────────────────
+            item {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(60.dp)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(AzulSeguro.copy(alpha = 0.30f), Negro)
+                            )
+                        )
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clip(CircleShape)
+                            .background(color = AzulSeguro.copy(alpha = 0.15f))
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.Shield,
+                        contentDescription = "Escudo de seguridad",
+                        tint = AzulClaro,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
+
+            // ── Subtítulo ────────────────────────────────────────
+            item {
+                Text(
+                    text = "Asistencia cuando\nmás lo necesitas",
+                    style = MaterialTheme.typography.body2,
+                    color = BlancoOpaco,
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            // ── Botón Empezar ────────────────────────────────────
+            item {
+                Button(
+                    onClick = onEmpezarClick,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = AzulSeguro
+                    )
+                ) {
+                    Text(
+                        text = "Empezar",
+                        style = MaterialTheme.typography.button,
+                        color = Blanco
+                    )
+                }
+            }
+        }
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/ui/screens/PantallaVinculacion.kt">
+package mx.edu.utng.compasos_wearos.ui.screens
+
+import androidx.compose.animation.core.EaseInOut
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.wear.compose.material.*
+import androidx.compose.runtime.collectAsState
+import mx.edu.utng.compasos_wearos.data.VinculacionState
+import mx.edu.utng.compasos_wearos.presentation.theme.*
+import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
+
+@Composable
+fun PantallaVinculacion(
+    viewModel: VinculacionViewModel,
+    onSolicitudConCodigo: (String) -> Unit,   // MQTT trajo un código → ir a teclado
+    onVinculacionExitosa: () -> Unit
+) {
+
+    val estado by viewModel.estado.collectAsState()
+
+    val pulso = rememberInfiniteTransition(label = "pulso")
+
+    val escala by pulso.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = 900,
+                easing = EaseInOut
+            ),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "escala"
+    )
+
+    LaunchedEffect(estado) {
+
+        when (val estadoActual = estado) {
+
+            is VinculacionState.Esperando -> {
+                // Esperando conexión con el broker / solicitud del teléfono
+            }
+
+            is VinculacionState.SolicitudRecibida -> {
+                estadoActual.codigoEsperado?.let { codigo ->
+                    onSolicitudConCodigo(codigo)
+                }
+            }
+
+            is VinculacionState.CodigoIncorrecto -> {
+                // No debería llegar aquí, se maneja en PantallaIngresoCodigo
+            }
+
+            is VinculacionState.Vinculando -> {
+                // Indicador de progreso, ya se muestra abajo
+            }
+
+            is VinculacionState.Vinculado -> {
+                onVinculacionExitosa()
+            }
+
+            is VinculacionState.Error -> {
+                // Aquí luego mostraremos un mensaje
+            }
+
+        }
+
+    }
+
+    val gradienteFondo = Brush.radialGradient(
+        colors = listOf(
+            GrisOscuro,
+            Negro
+        ),
+        radius = 400f
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(gradienteFondo),
+        contentAlignment = Alignment.Center
+    ) {
+
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp)
+        ) {
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+
+                Text(
+                    text = "Compa",
+                    style = MaterialTheme.typography.title1,
+                    color = Blanco
+                )
+
+                Text(
+                    text = "SOS",
+                    style = MaterialTheme.typography.title1,
+                    color = AzulClaro
+                )
+
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            Box(
+                modifier = Modifier.size(72.dp),
+                contentAlignment = Alignment.Center
+            ) {
+
+                Box(
+                    modifier = Modifier
+                        .size(72.dp)
+                        .scale(escala)
+                        .clip(CircleShape)
+                        .background(
+                            AzulSeguro.copy(alpha = 0.15f)
+                        )
+                )
+
+                Box(
+                    modifier = Modifier
+                        .size(54.dp)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.radialGradient(
+                                listOf(
+                                    AzulSeguro.copy(alpha = 0.40f),
+                                    Negro
+                                )
+                            )
+                        )
+                )
+
+                Icon(
+                    imageVector = Icons.Default.Bluetooth,
+                    contentDescription = null,
+                    tint = AzulClaro,
+                    modifier = Modifier.size(28.dp)
+                )
+
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            Text(
+                text = "Visible para tu teléfono",
+                style = MaterialTheme.typography.title3,
+                color = Blanco,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(Modifier.height(4.dp))
+
+            Text(
+                text = when (estado) {
+
+                    is VinculacionState.Esperando ->
+                        "Esperando conexión..."
+
+                    is VinculacionState.SolicitudRecibida ->
+                        "Solicitud recibida"
+
+                    is VinculacionState.CodigoIncorrecto ->
+                        "Código incorrecto, inténtalo de nuevo"
+
+                    is VinculacionState.Vinculando ->
+                        "Vinculando..."
+
+                    is VinculacionState.Vinculado ->
+                        "Vinculado"
+
+                    is VinculacionState.Error ->
+                        "Error de conexión"
+
+                },
+                style = MaterialTheme.typography.caption1,
+                color = if (estado is VinculacionState.CodigoIncorrecto) RojoOscuro else BlancoOpaco,
+                textAlign = TextAlign.Center
+            )
+
+        }
+
+    }
+
+}
+</file>
+
+<file path="README.md">
+# 🚨 CompaSOS
+
+## Información del Proyecto
+
+**Nombre del proyecto:** CompaSOS
+
+**Nombre de los estudiantes:** José Andrés Gutiérrez Vargas, Ana María Barrientos Guerrero
+
+**Grupo:** GIDS6093
+
+---
+
+# Beneficiario y problemática atendida
+
+El proyecto fue validado por **Saul Aguayo Arredondo**, Sub director de la **Escuela Secundaria Técnica No 26**.
+
+En una situación de emergencia (una caída, una descompensación de salud, un accidente doméstico o un riesgo en la vía pública) lo que determina el desenlace es el tiempo que transcurre entre el incidente y el momento en que alguien se entera. Actualmente ese aviso depende de una cadena frágil de condiciones: que la persona traiga el teléfono consigo, esté consciente, pueda desbloquearlo, ubique al contacto correcto y logre explicar dónde se encuentra. Basta con que una sola de esas condiciones falle para que la ayuda se retrase o no llegue.
+
+La problemática se agudiza en quienes pasan tiempo solos o dependen de un tercero: adultos mayores, personas con enfermedades crónicas o alguna discapacidad, y quienes se trasladan por zonas inseguras. Del otro lado, sus familiares y cuidadores no tienen una manera sencilla de saber si están bien sin llamar de forma constante, lo que impone una carga de vigilancia permanente que, aun así, no garantiza una reacción oportuna.
+
+A lo anterior se suma una limitación tecnológica de fondo: las alternativas disponibles viven en un solo dispositivo, casi siempre el teléfono, que es justamente el que no siempre está encima ni al alcance de la mano. No aprovechan el reloj inteligente que la persona porta durante todo el día, ni la televisión, que en muchos hogares —sobre todo donde hay adultos mayores— es la pantalla de mayor uso y la más fácil de operar. El resultado es una cobertura fragmentada que deja al usuario desprotegido precisamente en los momentos y lugares donde más necesita apoyo.
+
+Este módulo wearable atiende directamente esa brecha: lleva la capacidad de pedir ayuda al dispositivo que la persona porta de manera permanente, eliminando la dependencia de tener el teléfono a la mano.
+
+---
+
+# Objetivo
+
+Desarrollar una aplicación para Wear OS que permita brindar asistencia rápida en situaciones de emergencia mediante el envío de alertas, monitoreo de signos vitales y comunicación con una aplicación móvil. El objetivo principal es mejorar la seguridad del usuario proporcionando herramientas que faciliten la solicitud de ayuda de forma inmediata.
+
+---
+
+# Descripción de las funcionalidades
+
+La aplicación CompaSOS cuenta con las siguientes funcionalidades:
+
+- Inicio de sesión de usuarios.
+- Registro de nuevos usuarios.
+- Vinculación entre el reloj Wear OS y la aplicación móvil.
+- Botón de emergencia para enviar alertas.
+- Monitoreo de la frecuencia cardíaca en tiempo real.
+- Detección de caídas utilizando los sensores del dispositivo.
+- Envío automático de alertas cuando se detecta una posible emergencia.
+- Visualización del estado del usuario.
+- Interfaz diseñada y optimizada para dispositivos Wear OS.
+- Comunicación entre reloj y teléfono mediante Data Layer.
+- Almacenamiento de información utilizando Firebase.
+
+---
+
+# Tecnologías utilizadas
+
+## Lenguaje de programación
+
+- Kotlin
+
+## Frameworks y herramientas
+
+- Android Studio
+- Jetpack Compose
+- Wear OS
+- Firebase Authentication
+- Firebase Firestore
+- Firebase Realtime Database
+- Google Play Services
+- Data Layer API
+- Coroutines
+- Material Design
+
+---
+
+# Instrucciones para ejecutar el proyecto
+
+## Requisitos
+
+- Android Studio Hedgehog o superior.
+- JDK 17.
+- Dispositivo Wear OS o emulador Wear OS.
+- Dispositivo Android para la aplicación móvil.
+- Cuenta de Firebase configurada.
+- Archivo `google-services.json` agregado al proyecto.
+
+## Pasos
+
+1. Clonar el repositorio.
+
+```bash
+git clone  -b dev https://github.com/gutierrezvargasandy1/CompaSOS_WeareOS.git
+```
+
+2. Abrir el proyecto en Android Studio.
+
+3. Sincronizar las dependencias de Gradle.
+
+4. Ejecutar posteriormente la aplicación Wear OS.
+
+5. En otro dispositivo Android Vincula mediante el Divice Manage de Android Studios.
+
+6. Probar las funciones de monitoreo y envío de alertas.
+
+---
+
+# Capturas de pantalla de la aplicación
+
+## Pantalla de inicio de sesión
+
+![Login](imagenes/login.png)
+
+---
+
+## Conexion con dispositivo Android
+
+![Conexion](imagenes/Conexion.png)
+
+---
+
+## Pantalla confirmacion de Conexion
+
+![confirmacion](imagenes/confirmacion.png)
+
+## Pantalla Principal 
+
+![Principal](imagenes/principal.png)
+
+---
+
+## Pantalla SOS
+
+![SOS](imagenes/sos.png)
+
+---
+
+# Estructura del proyecto
+
+```
+CompaSOS/
+├── compasos_wearos/
+├── data/
+├── helper/
+├── ui/
+├── viewmodel/
+├── services/
+├── navigation/
+├── presentation/
+└── README.md
+```
+
+---
+
+# Autores
+
+**José Andrés Gutiérrez Vargas**
+
+**Ana María Barrientos Guerrero**
+
+**Grupo:** GIDS6093
+
+---
+
+# Licencia
+
+Proyecto desarrollado con fines académicos para la Universidad Tecnológica del Norte de Guanajuato.
+</file>
+
+<file path="app/src/main/AndroidManifest.xml">
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-feature android:name="android.hardware.type.watch" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault">
+
+        <uses-library
+            android:name="com.google.android.wearable"
+            android:required="true" />
+        <uses-library
+            android:name="wear-sdk"
+            android:required="false" />
+
+        <meta-data
+            android:name="com.google.android.wearable.standalone"
+            android:value="true" />
+
+        <activity
+            android:name=".presentation.MainActivity"
+            android:exported="true"
+            android:taskAffinity=""
+            android:windowOptOutEdgeToEdgeEnforcement="true"
+            android:theme="@style/MainActivityTheme.Starting">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+    </application>
+
+</manifest>
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/ui/screens/DashBoardScreen.kt">
+package mx.edu.utng.compasos_wearos.ui.screens.components
+
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
+import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.material.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import mx.edu.utng.compasos_wearos.helper.FeedbackHelper
+import mx.edu.utng.compasos_wearos.presentation.theme.*
+import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
+import java.text.SimpleDateFormat
+import java.util.*
+import kotlin.math.abs
+
+@Composable
+fun DashboardScreen(
+    onIrAInicio:      () -> Unit,
+    onIrAAjustes:     () -> Unit,
+    onDispararSOS:    () -> Unit,
+    onSwipeIzquierda: () -> Unit,
+    onTestMovimiento: () -> Unit = {},
+    tabActiva:        String = "inicio",
+    vm:               VinculacionViewModel = viewModel()
+) {
+    var gestoProcesado by remember { mutableStateOf(false) }
+    var mostrarDialogo by remember { mutableStateOf(false) }
+
+    val config by vm.configReloj.collectAsState()
+    val tiempoPresionMs = (config?.tiempoPanicoMs ?: 3000).toLong()
+    val totalSegundos = (tiempoPresionMs / 1000).toInt()
+    val modoDiscreto = config?.modoDiscreto ?: false
+
+    val scope = rememberCoroutineScope()
+
+    val context = LocalContext.current
+    val feedback = remember { FeedbackHelper(context) }
+    DisposableEffect(Unit) {
+        onDispose { feedback.liberar() }
+    }
+
+    // ── Reloj en tiempo real ────────────────────────────────────
+    var horaActual  by remember { mutableStateOf("") }
+    var fechaActual by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        val fmtHora  = SimpleDateFormat("HH:mm", Locale.getDefault())
+        val fmtFecha = SimpleDateFormat("EEE, dd MMM", Locale("es"))
+        while (true) {
+            val ahora = Date()
+            horaActual  = fmtHora.format(ahora)
+            fechaActual = fmtFecha.format(ahora).uppercase()
+            delay(1_000)
+        }
+    }
+
+    // ── Estado de presión ───────────────────────────────────────
+    var presionando     by remember { mutableStateOf(false) }
+    var segundosCuenta  by remember { mutableIntStateOf(totalSegundos) }
+    var progresoPresion by remember { mutableFloatStateOf(0f) }
+
+    // ── Color botón: azul → amarillo → rojo ────────────────────
+    val colorBoton: Color = when {
+        !presionando           -> AzulClaro
+        progresoPresion < 0.5f -> {
+            val t = progresoPresion / 0.5f
+            lerp(AzulClaro, AmarilloAlerta, t)
+        }
+        else -> {
+            val t = (progresoPresion - 0.5f) / 0.5f
+            lerp(AmarilloAlerta, Color(0xFFE53935), t)
+        }
+    }
+
+    val alphaParpadeo by animateFloatAsState(
+        targetValue   = if (presionando) 0.70f else 1f,
+        animationSpec = if (presionando)
+            infiniteRepeatable(
+                animation  = tween(350, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            )
+        else tween(150),
+        label = "parpadeo"
+    )
+
+    // ── Anillos reactivos ───────────────────────────────────────
+    val escalaAnillos by animateFloatAsState(
+        targetValue   = if (presionando) 1.09f else 1f,
+        animationSpec = if (presionando)
+            infiniteRepeatable(
+                animation  = tween(500, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            )
+        else tween(300),
+        label = "escalaAnillos"
+    )
+
+    val colorAnilloExterior by animateColorAsState(
+        targetValue   = if (presionando) colorBoton.copy(alpha = 0.30f)
+        else GrisOscuro.copy(alpha = 0.70f),
+        animationSpec = tween(300),
+        label         = "anilloExt"
+    )
+
+    val colorAnilloInterior by animateColorAsState(
+        targetValue   = if (presionando) colorBoton.copy(alpha = 0.20f)
+        else AzulSeguro.copy(alpha = 0.18f),
+        animationSpec = tween(300),
+        label         = "anilloInt"
+    )
+
+    if (mostrarDialogo) {
+        DialogoConfirmacionSOS(
+            modoDiscreto = modoDiscreto,
+            onConfirmar  = { mostrarDialogo = false; onDispararSOS() },
+            onCancelar   = { mostrarDialogo = false }
+        )
+    }
+
+    Scaffold(timeText = {}) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(CircleShape)
+                .background(Negro)
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart  = { gestoProcesado = false },
+                        onDrag       = { _, drag ->
+                            if (!gestoProcesado) {
+                                if (abs(drag.x) > abs(drag.y) && drag.x < -60f) {
+                                    gestoProcesado = true
+                                    onSwipeIzquierda()
+                                }
+                            }
+                        },
+                        onDragEnd    = { gestoProcesado = false },
+                        onDragCancel = { gestoProcesado = false }
+                    )
+                }
+        ) {
+            val d = minOf(maxWidth, maxHeight)
+
+            val tamHora    = (d.value * 0.095f).sp
+            val tamFecha   = (d.value * 0.040f).sp
+            val tamSOS     = (d.value * 0.125f).sp
+            val tamCaption = (d.value * 0.056f).sp
+            val tamBadge   = (d.value * 0.036f).sp
+            val padTop     = d * 0.080f
+            val padLateral = d * 0.19f
+            val zonaSegura = d * 0.50f
+
+            // ── 1. HORA + FECHA ──────────────────────────────────
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = padTop, start = padLateral)
+            ) {
+                Text(
+                    text          = horaActual,
+                    fontSize      = tamHora,
+                    fontWeight    = FontWeight.Bold,
+                    color         = Blanco,
+                    letterSpacing = 0.5.sp
+                )
+                Text(
+                    text          = fechaActual,
+                    fontSize      = tamFecha,
+                    color         = BlancoOpaco,
+                    letterSpacing = 0.3.sp
+                )
+            }
+
+            // ── 2. BADGE "● Activo" ──────────────────────────────
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = padTop + d * 0.015f, end = padLateral)
+                    .background(
+                        color = VerdeConectado.copy(alpha = 0.18f),
+                        shape = RoundedCornerShape(42)
+                    )
+                    .padding(
+                        horizontal = (d.value * 0.016f).dp,
+                        vertical   = (d.value * 0.006f).dp
+                    )
+            ) {
+                Text(
+                    text       = "● Activo",
+                    fontSize   = tamBadge,
+                    color      = VerdeConectado,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            // ── 3. ANILLOS + BOTÓN SOS ───────────────────────────
+            Box(
+                modifier         = Modifier.align(Alignment.Center),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(zonaSegura * escalaAnillos)
+                        .background(colorAnilloExterior, CircleShape)
+                )
+                Box(
+                    modifier = Modifier
+                        .size(zonaSegura * 0.78f * escalaAnillos)
+                        .background(colorAnilloInterior, CircleShape)
+                )
+                Box(
+                    modifier = Modifier
+                        .size(zonaSegura * 0.62f)
+                        .clip(RoundedCornerShape(zonaSegura * 0.15f))
+                        .background(colorBoton.copy(alpha = alphaParpadeo))
+                        .pointerInput(tiempoPresionMs) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    awaitFirstDown()
+
+                                    presionando     = true
+                                    segundosCuenta  = totalSegundos
+                                    progresoPresion = 0f
+
+                                    val progressJob = scope.launch {
+                                        val pasos      = tiempoPresionMs / 50
+                                        val incremento = 1f / pasos
+                                        repeat(pasos.toInt()) {
+                                            delay(50)
+                                            progresoPresion = (progresoPresion + incremento)
+                                                .coerceIn(0f, 1f)
+                                        }
+                                    }
+                                    val cuentaJob = scope.launch {
+                                        while (segundosCuenta > 0) {
+                                            delay(1_000)
+                                            segundosCuenta--
+                                            feedback.vibrarTick()
+                                        }
+                                    }
+
+                                    var soltado = false
+                                    val event = withTimeoutOrNull(tiempoPresionMs) {
+                                        while (true) {
+                                            val ev      = awaitPointerEvent()
+                                            val levanto = ev.changes.any { !it.pressed }
+                                            if (levanto) { soltado = true; break }
+                                        }
+                                    }
+
+                                    progressJob.cancel()
+                                    cuentaJob.cancel()
+                                    presionando     = false
+                                    progresoPresion = 0f
+                                    segundosCuenta  = totalSegundos
+
+                                    if (event == null && !soltado) {
+                                        mostrarDialogo = true
+                                    }
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text          = "SOS",
+                        fontSize      = tamSOS,
+                        color         = Blanco,
+                        fontWeight    = FontWeight.Bold,
+                        letterSpacing = 2.sp
+                    )
+                }
+            }
+
+            // ── 4. TEXTO AYUDA ───────────────────────────────────
+            Text(
+                text      = if (presionando)
+                    "Suelta para cancelar... $segundosCuenta"
+                else
+                    "Mantén presionado $totalSegundos seg",
+                fontSize  = tamCaption,
+                color     = if (presionando) colorBoton else BlancoOpaco,
+                textAlign = TextAlign.Center,
+                modifier  = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(
+                        bottom = d * 0.16f,
+                        start  = d * 0.10f,
+                        end    = d * 0.10f
+                    )
+            )
+        }
+    }
+}
+
+// ── Interpolación lineal de Color ────────────────────────────
+private fun lerp(start: Color, end: Color, t: Float): Color {
+    val s = t.coerceIn(0f, 1f)
+    return Color(
+        red   = start.red   + (end.red   - start.red)   * s,
+        green = start.green + (end.green - start.green)  * s,
+        blue  = start.blue  + (end.blue  - start.blue)  * s,
+        alpha = start.alpha + (end.alpha - start.alpha)  * s
+    )
+}
+
+// ── Diálogo de confirmación ───────────────────────────────────
+@Composable
+private fun DialogoConfirmacionSOS(
+    modoDiscreto: Boolean,
+    onConfirmar:  () -> Unit,
+    onCancelar:   () -> Unit
+) {
+    val totalSeg = 5
+    var segsRestantes by remember { mutableIntStateOf(totalSeg) }
+    val progreso = remember { Animatable(1f) }
+
+    val context = LocalContext.current
+    val feedback = remember { FeedbackHelper(context) }
+    DisposableEffect(Unit) {
+        onDispose { feedback.liberar() }
+    }
+
+    LaunchedEffect(Unit) {
+        progreso.animateTo(
+            targetValue   = 0f,
+            animationSpec = tween(totalSeg * 1000, easing = LinearEasing)
+        )
+        onConfirmar()
+    }
+    LaunchedEffect(Unit) {
+        while (segsRestantes > 0) {
+            delay(1_000)
+            segsRestantes--
+            feedback.vibrarTick()
+            feedback.reproducirTick(modoDiscreto)
+        }
+    }
+
+    Dialog(onDismissRequest = onCancelar) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Negro)
+        ) {
+            val d = minOf(maxWidth, maxHeight)
+
+            ScalingLazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                state = rememberScalingLazyListState(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy((d.value * 0.025f).dp),
+                contentPadding = PaddingValues(
+                    horizontal = d * 0.10f,
+                    vertical   = d * 0.08f
+                )
+            ) {
+
+                item {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size((d.value * 0.20f).dp)
+                            .clip(CircleShape)
+                            .background(AmarilloAlerta.copy(alpha = 0.18f))
+                    ) {
+                        Icon(
+                            imageVector        = Icons.Filled.Warning,
+                            contentDescription = "Advertencia",
+                            tint               = AmarilloAlerta,
+                            modifier           = Modifier.size((d.value * 0.12f).dp)
+                        )
+                    }
+                }
+
+                item {
+                    Text(
+                        text       = "¿Enviar alerta?",
+                        fontSize   = (d.value * 0.082f).sp,
+                        color      = Blanco,
+                        fontWeight = FontWeight.Bold,
+                        textAlign  = TextAlign.Center
+                    )
+                }
+
+                item {
+                    Text(
+                        text       = "Se notificará a tus\ncontactos de emergencia",
+                        fontSize   = (d.value * 0.055f).sp,
+                        color      = BlancoOpaco,
+                        textAlign  = TextAlign.Center,
+                        lineHeight = (d.value * 0.072f).sp
+                    )
+                }
+
+                item {
+                    Box(contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(
+                            progress       = progreso.value,
+                            modifier       = Modifier.size((d.value * 0.19f).dp),
+                            strokeWidth    = (d.value * 0.014f).dp,
+                            indicatorColor = AmarilloAlerta,
+                            trackColor     = GrisMedio
+                        )
+                        Text(
+                            text       = "$segsRestantes",
+                            fontSize   = (d.value * 0.090f).sp,
+                            color      = Blanco,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                item {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy((d.value * 0.03f).dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Button(
+                            onClick  = onCancelar,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height((d.value * 0.13f).dp),
+                            colors = ButtonDefaults.buttonColors(
+                                backgroundColor = GrisMedio
+                            )
+                        ) {
+                            Text("No", fontSize = (d.value * 0.062f).sp, color = Blanco)
+                        }
+                        Button(
+                            onClick  = onConfirmar,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height((d.value * 0.13f).dp),
+                            colors = ButtonDefaults.buttonColors(
+                                backgroundColor = RojoEmergencia
+                            )
+                        ) {
+                            Text("Enviar", fontSize = (d.value * 0.062f).sp, color = Blanco)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+</file>
+
+<file path="app/build.gradle.kts">
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
+    id("com.google.devtools.ksp")
+}
+
+android {
+    namespace = "mx.edu.utng.compasos_wearos"
+    compileSdk {
+        version = release(36)
+    }
+
+    defaultConfig {
+        applicationId = "mx.edu.utng.compasos_wearos"
+        minSdk = 34
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0"
+
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+    kotlinOptions {
+        jvmTarget = "11"
+    }
+    useLibrary("wear-sdk")
+    buildFeatures {
+        compose = true
+    }
+}
+
+dependencies {
+    implementation(libs.androidx.ui.graphics)
+    implementation(libs.play.services.wearable)
+    implementation(platform(libs.compose.bom))
+    implementation(libs.ui)
+    implementation(libs.ui.graphics)
+    implementation(libs.ui.tooling.preview)
+    implementation(libs.compose.material)
+    implementation(libs.compose.foundation)
+    implementation(libs.wear.tooling.preview)
+    implementation(libs.activity.compose)
+    implementation(libs.core.splashscreen)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.navigation)
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.ui.test.junit4)
+    debugImplementation(libs.ui.tooling)
+    debugImplementation(libs.ui.test.manifest)
+    val room_version = "2.8.4"
+
+    implementation("androidx.room:room-runtime:$room_version")
+    ksp("androidx.room:room-compiler:$room_version")
+    implementation("androidx.room:room-ktx:${room_version}")
+    implementation("androidx.compose.material:material-icons-extended:<version>")
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
+    implementation("com.google.android.gms:play-services-wearable:18.2.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
+
+    implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
+
+    implementation("androidx.wear:wear-input:1.1.0")
+
+
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/viewmodel/VinculacionViewModel.kt">
+package mx.edu.utng.compasos_wearos.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import mx.edu.utng.compasos_wearos.data.VinculacionEvent
+import mx.edu.utng.compasos_wearos.data.VinculacionState
+import mx.edu.utng.compasos_wearos.data.entity.ConfigReloj
+import mx.edu.utng.compasos_wearos.data.repository.AlertaWearRepository
+import mx.edu.utng.compasos_wearos.data.repository.VinculacionPrefs
+import mx.edu.utng.compasos_wearos.data.repository.VinculacionRepository
+import mx.edu.utng.compasos_wearos.services.MovimientoDetector
+
+class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
+
+    private val repo               = VinculacionRepository(app)
+    private val movimientoDetector = MovimientoDetector(app)
+
+    val estado: StateFlow<VinculacionState> = repo.vinculacionManager.estado
+    private val alertaRepo = AlertaWearRepository(app)
+    // Para trackear la alerta activa
+    private var alertaActivaId:      String? = null
+    private var alertaDispositivoId: String? = null
+
+
+
+    val estaVinculado: StateFlow<Boolean?> = VinculacionPrefs
+        .estaVinculado(app)
+        .stateIn(
+            scope        = viewModelScope,
+            started      = SharingStarted.WhileSubscribed(5_000),
+            initialValue = null
+        )
+
+    val configReloj: StateFlow<ConfigReloj?> = repo.observarConfig()
+        .stateIn(
+            scope        = viewModelScope,
+            started      = SharingStarted.WhileSubscribed(5_000),
+            initialValue = null
+        )
+
+    // ── Overlay: movimiento brusco detectado ──────────────────
+    private val _mostrarAlertaMovimiento = MutableStateFlow(false)
+    val mostrarAlertaMovimiento: StateFlow<Boolean> = _mostrarAlertaMovimiento
+
+    // ── Overlay: alerta ya enviada (pantalla final) ───────────
+    private val _alertaEnviada = MutableStateFlow(false)
+    val alertaEnviada: StateFlow<Boolean> = _alertaEnviada
+
+    init {
+        // ── NUEVO: empieza a escuchar solicitudes de vinculación MQTT ──
+        // El código llega por MQTT, se guarda en Room, y el estado pasa
+        // a SolicitudRecibida(codigoEsperado = ...) para que la UI pida
+        // que el usuario lo teclee.
+        viewModelScope.launch {
+            repo.escucharSolicitudesVinculacion()
+        }
+
+        // ── Observa config → activa/desactiva detector ────────
+        viewModelScope.launch {
+            configReloj.collect { config ->
+                if (config == null) return@collect
+
+                if (config.modoDiscreto) {
+                    movimientoDetector.iniciar(
+                        umbral = config.sensibilidadCaida
+                            .takeIf { it >= 18f } ?: 22f
+                    )
+                } else {
+                    movimientoDetector.detener()
+                }
+            }
+        }
+
+        // ── Escucha disparos del detector ─────────────────────
+        viewModelScope.launch {
+            movimientoDetector.movimientoErratico.collect {
+                if (!_mostrarAlertaMovimiento.value &&
+                    !_alertaEnviada.value &&
+                    estaVinculado.value == true
+                ) {
+                    _mostrarAlertaMovimiento.value = true
+                }
+            }
+        }
+    }
+
+    // ── Movimiento inusual: el usuario cancela manualmente ────
+    fun descartarAlertaMovimiento() {
+        _mostrarAlertaMovimiento.value = false
+    }
+
+    // ── Movimiento inusual: confirmado (botón o timeout) ──────
+    fun confirmarAlertaMovimiento() {
+        _mostrarAlertaMovimiento.value = false
+        dispararSOS()
+    }
+
+    // ── SOS manual (desde el Dashboard) o desde movimiento ────
+    fun dispararSOS() {
+        viewModelScope.launch {
+            val resultado = alertaRepo.enviarSOS()
+            if (resultado != null) {
+                alertaActivaId      = resultado.first
+                alertaDispositivoId = resultado.second
+                // Sigue enviando la ubicación cada 30 s durante 5 min
+                iniciarUbicacionPeriodica(resultado.first, resultado.second)
+            }
+            _alertaEnviada.value = true
+        }
+    }
+
+    private fun iniciarUbicacionPeriodica(alertaId: String, dispositivoId: String) {
+        viewModelScope.launch {
+            repeat(10) {
+                delay(30_000L)
+            }
+        }
+    }
+
+    // ── Oculta la pantalla de "Alerta enviada" ────────────────
+    fun ocultarAlertaEnviada() {
+        _alertaEnviada.value = false
+    }
+
+    // ── Flujo VIEJO: detección automática por Wearable Node API ──
+    fun iniciarEsperaBluetooth() {
+        viewModelScope.launch {
+            while (true) {
+                repo.detectarYGuardarTelefono(getApplication())
+                delay(3_000)
+            }
+        }
+    }
+
+    // ── Flujo VIEJO: aceptar sin código (Node detectado directo) ──
+    fun aceptarVinculacion() {
+        viewModelScope.launch {
+            val estadoActual = estado.value
+            if (estadoActual is VinculacionState.SolicitudRecibida &&
+                estadoActual.codigoEsperado == null
+            ) {
+                repo.guardarVinculacion(
+                    nodeId         = estadoActual.nombreTelefono,
+                    nombreTelefono = estadoActual.nombreTelefono
+                )
+                repo.vinculacionManager.vinculacionExitosa()
+                VinculacionPrefs.marcarVinculado(getApplication())
+            }
+        }
+    }
+
+    // ── NUEVO: flujo MQTT — el usuario teclea el código del teléfono ──
+    fun ingresarCodigo(codigo: String) {
+        viewModelScope.launch {
+            val exito = repo.confirmarCodigo(codigo)
+            if (exito) {
+                VinculacionPrefs.marcarVinculado(getApplication())
+            }
+            // Si no coincide, el estado ya cambió solo a CodigoIncorrecto
+        }
+    }
+
+    // ── NUEVO: cancelar mientras se espera/teclea el código MQTT ──
+    fun cancelarVinculacionMqtt() {
+        viewModelScope.launch {
+            repo.cancelarVinculacionPendiente()
+        }
+    }
+
+    fun cancelarVinculacion() {
+        repo.vinculacionManager.procesarEvento(VinculacionEvent.Cancelar)
+    }
+
+    fun confirmarVinculacion() {
+        viewModelScope.launch {
+            VinculacionPrefs.marcarVinculado(getApplication())
+        }
+    }
+
+    fun setModoDiscreto(activo: Boolean) {
+        viewModelScope.launch { repo.setModoDiscreto(activo) }
+    }
+
+    fun setTiempoPanico(segundos: Int) {
+        viewModelScope.launch { repo.setTiempoPanico(segundos) }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        movimientoDetector.detener()
+    }
+
+    fun simularMovimiento() {
+        _mostrarAlertaMovimiento.value = true
+    }
+
+    fun ocultarOverlayMovimiento() {
+        _mostrarAlertaMovimiento.value = false
+    }
+}
+</file>
+
+<file path="app/src/main/java/mx/edu/utng/compasos_wearos/navigation/Navigation.kt">
+package mx.edu.utng.compasos_wearos.navigation
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.wear.compose.material.CircularProgressIndicator
+import androidx.wear.compose.material3.AppScaffold
+import androidx.wear.compose.navigation.SwipeDismissableNavHost
+import androidx.wear.compose.navigation.composable
+import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
+import kotlinx.coroutines.delay
+import mx.edu.utng.compasos_wearos.data.VinculacionState
+import mx.edu.utng.compasos_wearos.presentation.theme.Negro
+import mx.edu.utng.compasos_wearos.ui.screens.AlertaEnviadaScreen
+import mx.edu.utng.compasos_wearos.ui.screens.MovimientoInusualScreen
+import mx.edu.utng.compasos_wearos.ui.screens.PantallaAcercaDispositivo
+import mx.edu.utng.compasos_wearos.ui.screens.PantallaAjustes
+import mx.edu.utng.compasos_wearos.ui.screens.PantallaAjustesAlerta
+import mx.edu.utng.compasos_wearos.ui.screens.PantallaIngresoCodigo
+import mx.edu.utng.compasos_wearos.ui.screens.PantallaInicio
+import mx.edu.utng.compasos_wearos.ui.screens.PantallaVinculacion
+import mx.edu.utng.compasos_wearos.ui.screens.components.DashboardScreen
+import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
+
+// TODO: cambiar a false antes de publicar
+
+@Composable
+fun AppNav(
+    vm: VinculacionViewModel = viewModel()
+) {
+    val vinculado               by vm.estaVinculado.collectAsState()
+    val estado                  by vm.estado.collectAsState()
+    val mostrarAlertaMovimiento by vm.mostrarAlertaMovimiento.collectAsState()
+    val alertaEnviada           by vm.alertaEnviada.collectAsState()
+
+    if (vinculado == null) {
+        CircularProgressIndicator()
+        return
+    }
+
+    // ───────────────── Overlay: Alerta ya enviada ─────────────────
+    if (alertaEnviada) {
+
+        AlertaEnviadaScreen()
+
+        LaunchedEffect(Unit) {
+            delay(5000)
+            vm.ocultarAlertaEnviada()
+            vm.ocultarOverlayMovimiento()
+        }
+
+        return
+    }
+
+    // ───────────────── Overlay: Movimiento inusual ─────────────────
+    if (mostrarAlertaMovimiento) {
+
+        MovimientoInusualScreen(
+            onEnviar = {
+                vm.confirmarAlertaMovimiento()
+            },
+            onCancelar = {
+                vm.descartarAlertaMovimiento()
+            }
+        )
+
+        return
+    }
+
+    AppScaffold(timeText = {}) {
+        val navController = rememberSwipeDismissableNavController()
+
+        SwipeDismissableNavHost(
+            navController    = navController,
+            startDestination = "splash"
+        ) {
+
+            composable("splash") {
+                LaunchedEffect(vinculado) {
+                    if (vinculado == true) {
+                        navController.navigate("menu_principal") {
+                            popUpTo("splash") { inclusive = true }
+                        }
+                    } else {
+                        navController.navigate("pantalla_inicio") {
+                            popUpTo("splash") { inclusive = true }
+                        }
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Negro)
+                )
+            }
+
+            composable("pantalla_inicio") {
+                PantallaInicio(
+                    onEmpezarClick = {
+                        navController.navigate("pantalla_vinculacion")
+                    }
+                )
+            }
+
+            // ── Espera a que llegue la solicitud del teléfono por MQTT ──
+            composable("pantalla_vinculacion") {
+
+                LaunchedEffect(estado) {
+                    when (val estadoActual = estado) {
+                        is VinculacionState.SolicitudRecibida -> {
+                            estadoActual.codigoEsperado?.let {
+                                navController.navigate("pantalla_codigo")
+                            }
+                        }
+                        is VinculacionState.Vinculado ->
+                            navController.navigate("menu_principal") {
+                                popUpTo("pantalla_inicio") { inclusive = true }
+                            }
+                        else -> {}
+                    }
+                }
+
+                PantallaVinculacion(
+                    viewModel            = vm,
+                    onSolicitudConCodigo = {},
+                    onVinculacionExitosa = {}
+                )
+            }
+
+            // ── Teclado para el código MQTT ──────
+            composable("pantalla_codigo") {
+
+                LaunchedEffect(estado) {
+                    when (estado) {
+                        is VinculacionState.Vinculado ->
+                            navController.navigate("menu_principal") {
+                                popUpTo("pantalla_inicio") { inclusive = true }
+                            }
+                        is VinculacionState.Esperando ->
+                            // Se canceló o expiró: regresa
+                            navController.popBackStack("pantalla_vinculacion", inclusive = false)
+                        else -> {}
+                    }
+                }
+
+                PantallaIngresoCodigo(
+                    viewModel  = vm,
+                    onCancelar = {
+                        vm.cancelarVinculacionMqtt()
+                        navController.popBackStack()
+                    }
+                )
+            }
+
+            composable("menu_principal") {
+                DashboardScreen(
+                    onIrAInicio      = {
+                        navController.navigate("menu_principal") {
+                            popUpTo("menu_principal") { inclusive = true }
+                        }
+                    },
+                    onIrAAjustes     = {
+                        navController.navigate("pantalla_ajustes")
+                    },
+                    onDispararSOS    = {
+                        vm.dispararSOS()
+                    },
+                    onSwipeIzquierda = {
+                        navController.navigate("pantalla_ajustes") {
+                            launchSingleTop = true
+                        }
+                    }
+
+                )
+            }
+
+            composable("pantalla_ajustes") {
+                PantallaAjustes(
+                    onAjustesAlertaClick = {
+                        navController.navigate("ajustes_alerta")
+                    },
+                    onAcercaClick = {
+                        navController.navigate("acerca_dispositivo")
+                    }
+                )
+            }
+
+            composable("ajustes_alerta") {
+                PantallaAjustesAlerta(vm = vm)
+            }
+
+            composable("acerca_dispositivo") {
+                PantallaAcercaDispositivo(vm = vm)
+            }
+        }
+    }
+}
+</file>
+
+</files>
