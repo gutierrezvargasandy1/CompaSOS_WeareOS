@@ -17,6 +17,13 @@ import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material.*
 import mx.edu.utng.compasos_wearos.presentation.theme.*
 
+/**
+ * componente composable que muestra la pantalla principal de ajustes en wear os,
+ * permitiendo navegar hacia configuraciones de alerta o información del dispositivo mediante fichas interactivas.
+ *
+ * @param onAjustesAlertaClick función lambda de devolución de llamada ejecutada al seleccionar la opción de ajustes de alerta.
+ * @param onAcercaClick función lambda de devolución de llamada ejecutada al seleccionar la opción acerca del dispositivo.
+ */
 @Composable
 fun PantallaAjustes(
     onAjustesAlertaClick: () -> Unit,
@@ -74,6 +81,15 @@ fun PantallaAjustes(
     }
 }
 
+/**
+ * componente composable privado que representa una tarjeta o ficha individual de ajuste
+ * con un ícono descriptivo, color personalizado y texto de etiqueta.
+ *
+ * @param icono vector de imagen [ImageVector] que ilustra el ajuste.
+ * @param colorIcono color de tinte asignado al ícono y su contenedor circular.
+ * @param titulo texto descriptivo de la opción de ajuste.
+ * @param onClick función lambda ejecutada al pulsar sobre la tarjeta.
+ */
 @Composable
 private fun TarjetaAjuste(
     icono: ImageVector,

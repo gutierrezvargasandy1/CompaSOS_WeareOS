@@ -7,11 +7,25 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.tasks.await
 
+/**
+ * gestor de estado y lógica para administrar el ciclo de vida del proceso de vinculación
+ * del dispositivo wear os utilizando flows y la api de google play services wear.
+ */
 class VinculacionManager {
 
+    /** flujo mutable interno que almacena el estado actual de la vinculación. */
     private val _estado = MutableStateFlow<VinculacionState>(VinculacionState.Esperando)
+
+    /**
+     * flujo expuesto de sólo lectura que emite los cambios de estado del proceso de vinculación.
+     */
     val estado: StateFlow<VinculacionState> = _estado.asStateFlow()
 
+    /**
+     * detecta si existe un teléfono vinculado y conectado mediante la api de nodos de wear os.
+     *
+     * @param context contexto de la aplicación necesario para acceder al cliente de nodos wearable.
+     */
     suspend fun detectarTelefonoConectado(context: Context) {
         try {
             val nodos = Wearable.getNodeClient(context).connectedNodes.await()
@@ -24,6 +38,11 @@ class VinculacionManager {
         }
     }
 
+    /**
+     * procesa un evento recibido y actualiza la máquina de estados de la vinculación en consecuencia.
+     *
+     * @param evento objeto [VinculacionEvent] que representa la acción o suceso a procesar.
+     */
     fun procesarEvento(evento: VinculacionEvent) {
         when (evento) {
             is VinculacionEvent.BuscarReloj ->
@@ -58,10 +77,18 @@ class VinculacionManager {
         }
     }
 
+    /**
+     * actualiza el estado de la vinculación indicando que el proceso concluyó de forma exitosa.
+     */
     fun vinculacionExitosa() {
         _estado.value = VinculacionState.Vinculado
     }
 
+    /**
+     * actualiza el estado de la vinculación reflejando un mensaje de error específico.
+     *
+     * @param mensaje descripción textual del error ocurrido.
+     */
     fun error(mensaje: String) {
         _estado.value = VinculacionState.Error(mensaje)
     }

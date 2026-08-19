@@ -28,6 +28,11 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import mx.edu.utng.compasos_wearos.helper.FeedbackHelper
 
+/**
+ * componente composable que muestra la pantalla de confirmación cuando una alerta de emergencia sos ha sido enviada.
+ * incluye efectos de vibración continua, un diseño optimizado con lista deslizante para pantallas redondas de wear os
+ * y tarjetas informativas sobre el estado de bloqueo del reloj y el envío de audio en tiempo real.
+ */
 @Composable
 fun AlertaEnviadaScreen() {
     // Estado de scroll optimizado para pantallas redondas de Wear OS

@@ -35,6 +35,19 @@ import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.abs
 
+/**
+ * componente composable principal que sirve como panel de control (dashboard) de la aplicación en wear os.
+ * muestra la hora actual, el estado de conectividad, un botón sos interactivo con animación de presión prolongada
+ * y un cuadro de diálogo de confirmación para disparar las alertas de emergencia.
+ *
+ * @param onIrAInicio función lambda de devolución de llamada para navegar a la pantalla de inicio.
+ * @param onIrAAjustes función lambda de devolución de llamada para navegar a la pantalla de ajustes.
+ * @param onDispararSOS función lambda de devolución de llamada ejecutada al confirmar el envío de una alerta sos.
+ * @param onSwipeIzquierda función lambda de devolución de llamada ejecutada al detectar un gesto de deslizamiento hacia la izquierda.
+ * @param onTestMovimiento función lambda auxiliar para pruebas de movimiento.
+ * @param tabActiva pestaña actual activa en el dashboard.
+ * @param vm instancia del [VinculacionViewModel] inyectada para gestionar estados y configuraciones.
+ */
 @Composable
 fun DashboardScreen(
     onIrAInicio:      () -> Unit,
@@ -314,7 +327,14 @@ fun DashboardScreen(
     }
 }
 
-// ── Interpolación lineal de Color ────────────────────────────
+/**
+ * realiza una interpolación lineal entre dos colores basados en un factor de progreso.
+ *
+ * @param start color inicial de la interpolación.
+ * @param end color final de la interpolación.
+ * @param t factor de interpolación normalizado entre 0.0 y 1.0.
+ * @return color resultante de la mezcla lineal.
+ */
 private fun lerp(start: Color, end: Color, t: Float): Color {
     val s = t.coerceIn(0f, 1f)
     return Color(
@@ -325,7 +345,14 @@ private fun lerp(start: Color, end: Color, t: Float): Color {
     )
 }
 
-// ── Diálogo de confirmación ───────────────────────────────────
+/**
+ * componente composable privado que muestra un diálogo de confirmación antes de enviar una alerta de emergencia sos,
+ * con temporizador regresivo, indicador de progreso circular y retroalimentación háptica.
+ *
+ * @param modoDiscreto indica si el modo discreto está activo para silenciar los sonidos de tic.
+ * @param onConfirmar función lambda de devolución de llamada cuando el usuario confirma el envío.
+ * @param onCancelar función lambda de devolución de llamada cuando el usuario cancela el diálogo.
+ */
 @Composable
 private fun DialogoConfirmacionSOS(
     modoDiscreto: Boolean,

@@ -19,6 +19,13 @@ import androidx.wear.compose.material.*
 import mx.edu.utng.compasos_wearos.presentation.theme.*
 import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
 
+/**
+ * componente composable que representa la pantalla de ajustes de alerta en wear os,
+ * permitiendo configurar opciones como el modo discreto (alarma sin sonido ni vibración)
+ * y el tiempo de pulsación necesario para activar la señal de pánico sos.
+ *
+ * @param vm instancia del [VinculacionViewModel] inyectada para gestionar y persistir la configuración en room.
+ */
 @Composable
 fun PantallaAjustesAlerta(
     vm: VinculacionViewModel = viewModel()

@@ -13,15 +13,28 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 
+/**
+ * repositorio encargado del envío y gestión de alertas de emergencia y datos multimedia desde el reloj inteligente.
+ * coordina la comunicación remota con el teléfono móvil mediante protocolo mqtt.
+ *
+ * @param context contexto de la aplicación para acceder a preferencias, base de datos local y servicios del sistema.
+ */
 class AlertaWearRepository(private val context: Context) {
 
+    /** gestor de cliente mqtt para realizar conexiones y publicaciones de mensajes. */
     private val mqtt = MqttManager()
+
+    /** objeto de acceso a datos para consultar la configuración local del reloj. */
     private val dao  = WearDatabase.getInstance(context).configRelojDao()
+
+    /** formateador de fechas para la marca de tiempo de los mensajes emitidos. */
     private val fmt  = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
 
     /**
-     * El reloj actúa como control remoto: publica el trigger SOS.
-     * El teléfono es responsable de obtener la ubicación y crear la alerta completa.
+     * envía un evento o detonador sos de emergencia desde el reloj hacia el broker mqtt.
+     * recupera la configuración almacenada o genera un identificador alternativo para publicar la alerta.
+     *
+     * @return un par [Pair] de cadenas conteniendo el id de la alerta y el id del dispositivo si el envío fue exitoso, o null en caso de falla.
      */
     @SuppressLint("HardwareIds")
     suspend fun enviarSOS(): Pair<String, String>? = withContext(Dispatchers.IO) {
@@ -60,7 +73,13 @@ class AlertaWearRepository(private val context: Context) {
         }
     }
 
-    /** Opcional: audio del micrófono del reloj si se implementa. */
+    /**
+     * transmite un fragmento de audio codificado en base64 capturado desde el micrófono del reloj.
+     *
+     * @param alertaId identificador único de la alerta asociada a la grabación de audio.
+     * @param dispositivoId identificador del dispositivo que envía el audio.
+     * @param base64Chunk cadena de texto que contiene el segmento de audio codificado en base64.
+     */
     suspend fun publicarChunkAudio(
         alertaId: String,
         dispositivoId: String,

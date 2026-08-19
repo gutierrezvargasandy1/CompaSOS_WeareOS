@@ -28,9 +28,16 @@ import mx.edu.utng.compasos_wearos.data.VinculacionState
 import mx.edu.utng.compasos_wearos.presentation.theme.*
 import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
 
-private const val LARGO_CODIGO = 6
-private const val KEY_CODIGO = "key_codigo_vinculacion"
+private const val largo_codigo = 6
+private const val key_codigo = "key_codigo_vinculacion"
 
+/**
+ * componente composable que representa la pantalla de ingreso del código de vinculación en wear os,
+ * abriendo automáticamente el teclado nativo del sistema para capturar la clave enviada desde el teléfono.
+ *
+ * @param viewModel instancia del [VinculacionViewModel] encargada de validar el código y gestionar el estado.
+ * @param onCancelar función lambda ejecutada para cancelar el proceso de vinculación y regresar.
+ */
 @Composable
 fun PantallaIngresoCodigo(
     viewModel: VinculacionViewModel,
@@ -52,10 +59,10 @@ fun PantallaIngresoCodigo(
     ) { result ->
         val data = result.data
         val bundle: Bundle? = data?.let { RemoteInput.getResultsFromIntent(it) }
-        val texto = bundle?.getCharSequence(KEY_CODIGO)?.toString()
+        val texto = bundle?.getCharSequence(key_codigo)?.toString()
 
         if (!texto.isNullOrBlank()) {
-            val limpio = texto.trim().uppercase().take(LARGO_CODIGO)
+            val limpio = texto.trim().uppercase().take(largo_codigo)
             codigoIngresado = limpio
             if (limpio.isNotEmpty()) {
                 viewModel.ingresarCodigo(limpio)
@@ -66,7 +73,7 @@ fun PantallaIngresoCodigo(
     fun abrirTecladoNativo() {
         val intent = RemoteInputIntentHelper.createActionRemoteInputIntent()
 
-        val remoteInput: RemoteInput = RemoteInput.Builder(KEY_CODIGO)
+        val remoteInput: RemoteInput = RemoteInput.Builder(key_codigo)
             .setLabel("Código de vinculación")
             .build()
 

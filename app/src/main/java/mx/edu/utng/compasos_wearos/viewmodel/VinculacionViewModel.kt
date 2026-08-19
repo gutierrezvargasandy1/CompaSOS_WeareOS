@@ -17,19 +17,29 @@ import mx.edu.utng.compasos_wearos.data.repository.VinculacionPrefs
 import mx.edu.utng.compasos_wearos.data.repository.VinculacionRepository
 import mx.edu.utng.compasos_wearos.services.MovimientoDetector
 
+/**
+ * viewmodel principal de la aplicación wear os que gestiona la lógica de negocio,
+ * el estado de vinculación, la configuración del reloj y la detección de movimientos inusuales o sos.
+ *
+ * @param app instancia de la aplicación [Application] requerida por [AndroidViewModel].
+ */
 class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
 
+    /** repositorio encargado de la gestión de vinculación y estado del dispositivo. */
     private val repo               = VinculacionRepository(app)
+    /** componente detector de movimientos erráticos mediante el acelerómetro. */
     private val movimientoDetector = MovimientoDetector(app)
 
+    /** flujo de estado expuesto que refleja el estado actual de la vinculación en el gestor. */
     val estado: StateFlow<VinculacionState> = repo.vinculacionManager.estado
+    /** repositorio encargado de procesar y enviar las alertas de emergencia sos. */
     private val alertaRepo = AlertaWearRepository(app)
-    // Para trackear la alerta activa
+    /** identificador de la alerta activa actual, si existe. */
     private var alertaActivaId:      String? = null
+    /** identificador del dispositivo asociado a la alerta activa actual, si existe. */
     private var alertaDispositivoId: String? = null
 
-
-
+    /** flujo de estado que indica si el reloj se encuentra vinculado al teléfono de forma persistente. */
     val estaVinculado: StateFlow<Boolean?> = VinculacionPrefs
         .estaVinculado(app)
         .stateIn(
@@ -38,6 +48,7 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
             initialValue = null
         )
 
+    /** flujo de estado que observa los cambios en la configuración local del reloj. */
     val configReloj: StateFlow<ConfigReloj?> = repo.observarConfig()
         .stateIn(
             scope        = viewModelScope,
@@ -46,11 +57,15 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
         )
 
     // ── Overlay: movimiento brusco detectado ──────────────────
+    /** flujo mutable interno para controlar la visibilidad de la superposición de movimiento brusco. */
     private val _mostrarAlertaMovimiento = MutableStateFlow(false)
+    /** flujo expuesto de sólo lectura que indica si se debe mostrar la alerta de movimiento inusual. */
     val mostrarAlertaMovimiento: StateFlow<Boolean> = _mostrarAlertaMovimiento
 
     // ── Overlay: alerta ya enviada (pantalla final) ───────────
+    /** flujo mutable interno que indica si el estado visual corresponde a la pantalla de alerta ya enviada. */
     private val _alertaEnviada = MutableStateFlow(false)
+    /** flujo expuesto de sólo lectura que señala si la alerta ha sido enviada con éxito. */
     val alertaEnviada: StateFlow<Boolean> = _alertaEnviada
 
     init {
@@ -91,18 +106,24 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ── Movimiento inusual: el usuario cancela manualmente ────
+    /**
+     * descarta manualmente la alerta de movimiento inusual detectada y oculta el overlay.
+     */
     fun descartarAlertaMovimiento() {
         _mostrarAlertaMovimiento.value = false
     }
 
-    // ── Movimiento inusual: confirmado (botón o timeout) ──────
+    /**
+     * confirma el estado de movimiento inusual, ocultando el aviso y disparando una emergencia sos.
+     */
     fun confirmarAlertaMovimiento() {
         _mostrarAlertaMovimiento.value = false
         dispararSOS()
     }
 
-    // ── SOS manual (desde el Dashboard) o desde movimiento ────
+    /**
+     * dispara el envío de una señal de emergencia sos (ya sea de forma manual o por detección de movimiento).
+     */
     fun dispararSOS() {
         viewModelScope.launch {
             val resultado = alertaRepo.enviarSOS()
@@ -116,6 +137,12 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * simula un envío periódico de ubicación en segundo plano tras disparar una alerta sos.
+     *
+     * @param alertaId identificador único de la alerta generada.
+     * @param dispositivoId identificador único del dispositivo emisor.
+     */
     private fun iniciarUbicacionPeriodica(alertaId: String, dispositivoId: String) {
         viewModelScope.launch {
             repeat(10) {
@@ -124,12 +151,16 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ── Oculta la pantalla de "Alerta enviada" ────────────────
+    /**
+     * oculta la pantalla o superposición de "alerta enviada".
+     */
     fun ocultarAlertaEnviada() {
         _alertaEnviada.value = false
     }
 
-    // ── Flujo VIEJO: detección automática por Wearable Node API ──
+    /**
+     * inicia un bucle de espera por bluetooth utilizando la api de nodos wearable para detectar el teléfono.
+     */
     fun iniciarEsperaBluetooth() {
         viewModelScope.launch {
             while (true) {
@@ -139,7 +170,9 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ── Flujo VIEJO: aceptar sin código (Node detectado directo) ──
+    /**
+     * acepta la solicitud de vinculación de manera directa cuando se detecta automáticamente por nodo.
+     */
     fun aceptarVinculacion() {
         viewModelScope.launch {
             val estadoActual = estado.value
@@ -156,7 +189,11 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ── NUEVO: flujo MQTT — el usuario teclea el código del teléfono ──
+    /**
+     * procesa e ingresa el código de verificación proporcionado por el usuario para completar la vinculación por mqtt.
+     *
+     * @param codigo cadena con el código alfanumérico ingresado.
+     */
     fun ingresarCodigo(codigo: String) {
         viewModelScope.launch {
             val exito = repo.confirmarCodigo(codigo)
@@ -167,40 +204,67 @@ class VinculacionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ── NUEVO: cancelar mientras se espera/teclea el código MQTT ──
+    /**
+     * cancela el proceso de vinculación basado en mqtt y restablece el estado pendiente.
+     */
     fun cancelarVinculacionMqtt() {
         viewModelScope.launch {
             repo.cancelarVinculacionPendiente()
         }
     }
 
+    /**
+     * procesa un evento general de cancelación de vinculación en el gestor.
+     */
     fun cancelarVinculacion() {
         repo.vinculacionManager.procesarEvento(VinculacionEvent.Cancelar)
     }
 
+    /**
+     * marca formalmente al dispositivo como vinculado guardando el estado en las preferencias locales.
+     */
     fun confirmarVinculacion() {
         viewModelScope.launch {
             VinculacionPrefs.marcarVinculado(getApplication())
         }
     }
 
+    /**
+     * actualiza la configuración del modo discreto en el repositorio local.
+     *
+     * @param activo valor booleano que define si el modo discreto se encuentra habilitado.
+     */
     fun setModoDiscreto(activo: Boolean) {
         viewModelScope.launch { repo.setModoDiscreto(activo) }
     }
 
+    /**
+     * actualiza el tiempo de pánico o umbral de tiempo en la configuración local.
+     *
+     * @param segundos valor entero con los segundos de duración configurados.
+     */
     fun setTiempoPanico(segundos: Int) {
         viewModelScope.launch { repo.setTiempoPanico(segundos) }
     }
 
+    /**
+     * método invocado cuando el viewmodel es destruido; libera los recursos del detector de movimiento.
+     */
     override fun onCleared() {
         super.onCleared()
         movimientoDetector.detener()
     }
 
+    /**
+     * simula de manera manual la detección de un movimiento brusco para propósitos de prueba.
+     */
     fun simularMovimiento() {
         _mostrarAlertaMovimiento.value = true
     }
 
+    /**
+     * oculta la superposición de movimiento brusco de forma explícita.
+     */
     fun ocultarOverlayMovimiento() {
         _mostrarAlertaMovimiento.value = false
     }

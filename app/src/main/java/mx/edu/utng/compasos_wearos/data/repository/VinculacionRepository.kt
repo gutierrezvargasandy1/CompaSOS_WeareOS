@@ -20,19 +20,40 @@ import mx.edu.utng.compasos_wearos.data.db.WearDatabase
 import mx.edu.utng.compasos_wearos.data.entity.ConfigReloj
 import org.json.JSONObject
 
+/**
+ * repositorio para gestionar los procesos de vinculación del reloj inteligente con un dispositivo móvil.
+ * administra la persistencia local de datos de vinculación y la comunicación mqtt para vincular dispositivos.
+ *
+ * @param context contexto de la aplicación para el acceso a la base de datos local y servicios del sistema.
+ */
 class VinculacionRepository(private val context: Context) {
 
+    /** objeto dao para acceder y manipular la configuración del reloj en la base de datos local room. */
     private val dao: ConfigRelojDao =
         WearDatabase.getInstance(context).configRelojDao()
 
+    /** gestor de conexiones y publicaciones mediante el protocolo mqtt. */
     private val mqtt = MqttManager()
 
+    /** administrador del estado y flujo de eventos del proceso de vinculación. */
     val vinculacionManager = VinculacionManager()
 
+    /** alcance (scope) de corrutinas para gestionar operaciones asíncronas dentro del repositorio. */
     private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /**
+     * observa de forma continua los cambios en la configuración del reloj almacenada localmente.
+     *
+     * @return un flujo [Flow] que emite el estado actualizado de [ConfigReloj].
+     */
     fun observarConfig(): Flow<ConfigReloj?> = dao.observarConfig()
 
+    /**
+     * guarda o actualiza la información del dispositivo teléfono vinculado en la base de datos.
+     *
+     * @param nodeId identificador único del dispositivo móvil vinculado.
+     * @param nombreTelefono nombre descriptivo del teléfono vinculado.
+     */
     suspend fun guardarVinculacion(nodeId: String, nombreTelefono: String) {
         val configActual = dao.obtenerConfig() ?: ConfigReloj()
         dao.guardarConfig(
@@ -45,6 +66,9 @@ class VinculacionRepository(private val context: Context) {
         )
     }
 
+    /**
+     * borra los datos de vinculación actuales y restablece los campos correspondientes en la configuración local.
+     */
     suspend fun borrarVinculacion() {
         val configActual = dao.obtenerConfig() ?: ConfigReloj()
         dao.guardarConfig(
@@ -57,6 +81,11 @@ class VinculacionRepository(private val context: Context) {
         )
     }
 
+    /**
+     * detecta la presencia de un teléfono conectado y guarda sus datos si la solicitud fue recibida.
+     *
+     * @param context contexto de la aplicación para ejecutar la detección de dispositivos.
+     */
     suspend fun detectarYGuardarTelefono(context: Context) {
         vinculacionManager.detectarTelefonoConectado(context)
         val estadoActual = vinculacionManager.estado.value
@@ -72,6 +101,9 @@ class VinculacionRepository(private val context: Context) {
     // FLUJO MQTT CON CÓDIGO
     // ══════════════════════════════════════════════════════════
 
+    /**
+     * suscribe el cliente mqtt al tópico de solicitudes de vinculación y procesa los eventos recibidos.
+     */
     suspend fun escucharSolicitudesVinculacion() {
         withContext(Dispatchers.IO) {
             try {
@@ -101,6 +133,11 @@ class VinculacionRepository(private val context: Context) {
         }
     }
 
+    /**
+     * almacena localmente el código de vinculación pendiente recibido.
+     *
+     * @param codigo código de vinculación temporal que se desea guardar.
+     */
     private suspend fun guardarCodigoPendiente(codigo: String) {
         if (dao.obtenerConfig() == null) dao.guardarConfig(ConfigReloj())
         dao.setCodigoVinculacion(codigo)
@@ -158,16 +195,29 @@ class VinculacionRepository(private val context: Context) {
         }
     }
 
+    /**
+     * cancela el proceso de vinculación pendiente limpiando el código guardado y emitiendo el evento de cancelación.
+     */
     suspend fun cancelarVinculacionPendiente() {
         dao.limpiarCodigoVinculacion()
         vinculacionManager.procesarEvento(VinculacionEvent.Cancelar)
     }
 
+    /**
+     * modifica y guarda el estado del modo discreto en la configuración local.
+     *
+     * @param activo valor booleano que indica si el modo discreto estará activo o no.
+     */
     suspend fun setModoDiscreto(activo: Boolean) {
         if (dao.obtenerConfig() == null) dao.guardarConfig(ConfigReloj())
         dao.setModoDiscreto(activo)
     }
 
+    /**
+     * establece la duración del temporizador de pánico en la configuración local convertida a milisegundos.
+     *
+     * @param segundos tiempo en segundos deseado para la activación de pánico.
+     */
     suspend fun setTiempoPanico(segundos: Int) {
         if (dao.obtenerConfig() == null) dao.guardarConfig(ConfigReloj())
         dao.setTiempoPanico(segundos * 1000)

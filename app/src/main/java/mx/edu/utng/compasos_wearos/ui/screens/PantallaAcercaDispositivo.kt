@@ -24,6 +24,12 @@ import mx.edu.utng.compasos_wearos.data.entity.ConfigReloj
 import mx.edu.utng.compasos_wearos.presentation.theme.*
 import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
 
+/**
+ * componente composable que representa la pantalla de información "acerca del dispositivo"
+ * en wear os, observando la configuración local desde room en tiempo real a través del viewmodel.
+ *
+ * @param vm instancia del [VinculacionViewModel] inyectada para acceder a los estados del reloj.
+ */
 @Composable
 fun PantallaAcercaDispositivo(
     vm: VinculacionViewModel = viewModel()
@@ -39,6 +45,15 @@ fun PantallaAcercaDispositivo(
     )
 }
 
+/**
+ * componente composable privado que renderiza el contenido estructurado de la pantalla
+ * "acerca del dispositivo", organizando la información en secciones con listas deslizantes.
+ *
+ * @param config objeto [ConfigReloj] con los valores de configuración actuales.
+ * @param modeloReloj cadena que representa el modelo físico del reloj.
+ * @param versionSO cadena con la versión de android wear os del dispositivo.
+ * @param versionApp cadena con la versión actual de la aplicación.
+ */
 @Composable
 private fun PantallaAcercaDispositivoContenido(
     config      : ConfigReloj,
@@ -206,13 +221,23 @@ private fun PantallaAcercaDispositivoContenido(
     }
 }
 
-// ── Formatea timestamp a fecha legible ───────────────────────
+/**
+ * formatea una marca de tiempo en formato de fecha y hora legible (dd/MM/yyyy HH:mm).
+ *
+ * @param timestamp valor numérico en milisegundos que representa la fecha.
+ * @return cadena de texto con la fecha formateada.
+ */
 private fun formatearFecha(timestamp: Long): String {
     val sdf = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale.getDefault())
     return sdf.format(java.util.Date(timestamp))
 }
 
-// ── Componente: sección con título y contenido ───────────────
+/**
+ * componente composable contenedor que agrupa filas de información bajo una sección con título y diseño de tarjeta.
+ *
+ * @param titulo título de la sección informativa.
+ * @param contenido bloque composable que define las filas internas de la sección.
+ */
 @Composable
 private fun SeccionInfo(
     titulo    : String,
@@ -235,7 +260,14 @@ private fun SeccionInfo(
     }
 }
 
-// ── Componente: fila con ícono, etiqueta y valor ─────────────
+/**
+ * componente composable que muestra una fila con un ícono circular coloreado, una etiqueta descriptiva y un valor.
+ *
+ * @param icono vector de imagen [ImageVector] que se mostrará dentro del círculo.
+ * @param colorIcono color de tinte aplicado al ícono y al fondo translúcido.
+ * @param etiqueta texto descriptivo de la propiedad.
+ * @param valor valor asociado a la propiedad.
+ */
 @Composable
 private fun FilaInfo(
     icono      : androidx.compose.ui.graphics.vector.ImageVector,
@@ -277,7 +309,12 @@ private fun FilaInfo(
     }
 }
 
-// ── Componente: fila solo etiqueta y valor ───────────────────
+/**
+ * componente composable que muestra una fila simple con una etiqueta y su respectivo valor alineados a los extremos.
+ *
+ * @param etiqueta texto descriptivo del parámetro de configuración.
+ * @param valor valor actual del parámetro.
+ */
 @Composable
 private fun FilaValor(
     etiqueta : String,

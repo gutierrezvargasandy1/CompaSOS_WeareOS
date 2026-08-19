@@ -27,6 +27,14 @@ import mx.edu.utng.compasos_wearos.data.VinculacionState
 import mx.edu.utng.compasos_wearos.presentation.theme.*
 import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
 
+/**
+ * componente composable que representa la pantalla de vinculación de dispositivos en wear os,
+ * mostrando una animación de pulso y actualizando dinámicamente el estado de conexión inalámbrica.
+ *
+ * @param viewModel instancia del [VinculacionViewModel] que administra el flujo de estados de vinculación.
+ * @param onSolicitudConCodigo función lambda ejecutada al recibir una solicitud con código de vinculación para abrir el teclado.
+ * @param onVinculacionExitosa función lambda ejecutada cuando el proceso de vinculación se completa con éxito.
+ */
 @Composable
 fun PantallaVinculacion(
     viewModel: VinculacionViewModel,

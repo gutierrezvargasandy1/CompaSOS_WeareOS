@@ -27,6 +27,13 @@ import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
 
 // TODO: cambiar a false antes de publicar
 
+/**
+ * componente composable principal que administra la navegación y el enrutamiento de pantallas
+ * dentro de la aplicación wear os, además de gestionar las capas de superposición (overlays) globales
+ * para alertas y notificaciones críticas.
+ *
+ * @param vm instancia del [VinculacionViewModel] inyectada para observar estados de vinculación y alertas.
+ */
 @Composable
 fun AppNav(
     vm: VinculacionViewModel = viewModel()

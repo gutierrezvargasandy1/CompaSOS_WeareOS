@@ -24,6 +24,15 @@ import mx.edu.utng.compasos_wearos.helper.FeedbackHelper
 import mx.edu.utng.compasos_wearos.presentation.theme.*
 import mx.edu.utng.compasos_wearos.viewmodel.VinculacionViewModel
 
+/**
+ * componente composable que maneja la pantalla de notificación cuando se detecta un movimiento inusual en el dispositivo wear os.
+ * muestra una cuenta regresiva con un temporizador circular, opciones para cancelar o enviar manualmente la alerta,
+ * y emite retroalimentación háptica y de sonido durante la cuenta regresiva.
+ *
+ * @param onEnviar función lambda de devolución de llamada ejecutada al enviar la alerta (por temporizador o botón).
+ * @param onCancelar función lambda de devolución de llamada ejecutada al cancelar la alerta.
+ * @param vm instancia del [VinculacionViewModel] inyectada para obtener configuraciones del reloj.
+ */
 @Composable
 fun MovimientoInusualScreen(
     onEnviar:   () -> Unit,

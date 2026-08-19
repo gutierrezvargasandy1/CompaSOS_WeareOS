@@ -16,6 +16,12 @@ import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material.*
 import mx.edu.utng.compasos_wearos.presentation.theme.*
 
+/**
+ * componente composable que representa la pantalla de bienvenida o inicio de la aplicación en wear os,
+ * mostrando el logotipo de compasos, un escudo de seguridad representativo y el botón de acceso para comenzar.
+ *
+ * @param onEmpezarClick función lambda de devolución de llamada ejecutada al pulsar el botón de empezar.
+ */
 @Composable
 fun PantallaInicio(
     onEmpezarClick: () -> Unit
