@@ -1,496 +1,184 @@
-El **teléfono es el centro** de todo el sistema — esto ya estaba en tu lista de funcionalidades ("Funcionar como centro de configuración y sincronización del resto de los dispositivos"). El reloj nunca habla directo con la TV, ni la TV con el reloj: todo pasa por el teléfono, que es el único dispositivo con la base de datos completa (familiares, alertas, ubicaciones).
+# 📱 CompaSOS - Sistema de Alerta y Sincronización Multi-dispositivo
 
-Hay **dos servicios en foreground corriendo en paralelo** dentro del teléfono, con conexiones MQTT independientes (`clientId` distintos), para que un problema en uno nunca afecte al otro:
+## 📋 Índice
 
-| Servicio | Qué atiende | Topics | ¿Se modificó? |
-|---|---|---|---|
-| `AlertaMqttService` | Reloj (SOS, audio) y familiares (alertas, ubicación) | `compasos/alerta/+/sos`, `compasos/alerta/+/audio`, `compasos/familia/{userId}/alerta`, `compasos/familia/{userId}/ubicacion` | **No — intacto** |
-| `TvSyncService` | Sincronización con las TVs vinculadas | `compasos/tv/{tvId}/*` | **Nuevo** |
+1. [Visión General](#visión-general)
+2. [Arquitectura del Sistema](#arquitectura-del-sistema)
+3. [Estructura de Topics MQTT](#estructura-de-topics-mqtt)
+4. [Módulo Teléfono](#módulo-teléfono)
+5. [Módulo TV](#módulo-tv)
+6. [Módulo Wear OS](#módulo-wear-os)
+7. [Guía de Ejecución](#guía-de-ejecución)
+8. [Estructura del Proyecto](#estructura-del-proyecto)
 
-## El contrato de topics
+---
 
-Todos los topics de este sistema cuelgan de tres raíces, definidas en `MqttConfig.kt` (idéntico en ambos módulos salvo el paquete):
+## Visión General
 
-| Topic | Sentido | Retained | Quién lo define |
-|---|---|:---:|---|
-| `compasos/alerta/{dispositivoId}/sos` | Reloj → Teléfono | no | **No tocado** — flujo del reloj |
-| `compasos/alerta/{dispositivoId}/audio` | Reloj → Teléfono | no | **No tocado** — flujo del reloj |
-| `compasos/familia/{usuarioId}/alerta` | Teléfono → Familiar | no | **No tocado** — flujo de familiares |
-| `compasos/familia/{usuarioId}/ubicacion` | Teléfono → Familiar | no | **No tocado** — flujo de familiares |
-| `compasos/vinculacion/tv/{codigo}/solicitud` | TV → Teléfono | no | Vinculación de una TV nueva |
-| `compasos/vinculacion/tv/{codigo}/respuesta` | Teléfono → TV | no | Confirmación de vinculación |
-| `compasos/tv/{tvId}/sesion` | Teléfono → TV | **sí** | Snapshot completo: usuario + familiares con ubicación |
-| `compasos/tv/{tvId}/ubicacion/{usuarioId}` | Teléfono → TV | **sí** | Ubicación de UN familiar (el id va en el topic) |
-| `compasos/tv/{tvId}/alerta` | Teléfono → TV | no | Alerta de emergencia (evento puntual) |
-| `compasos/tv/{tvId}/notificacion` | Teléfono → TV | no | Notificación informativa |
-| `compasos/tv/{tvId}/telefono_estado` | Teléfono → TV | **sí** | Presencia del teléfono (es su Last Will) |
-| `compasos/tv/{tvId}/estado` | TV → Teléfono | **sí** | Presencia de la TV (es su Last Will) |
+CompaSOS es un sistema de seguridad y monitoreo multi-dispositivo que integra:
 
-La TV se suscribe con **un solo wildcard**: `compasos/tv/{tvId}/#`. Si se agrega un subtopic nuevo del lado del teléfono, le llega a la TV sin tocar una sola línea de ese lado.
+- **Teléfono Android**: Centro de control y sincronización
+- **TV Android**: Pantalla de visualización de alertas y ubicaciones
+- **Reloj Wear OS**: Dispositivo de alerta SOS portátil
 
-### Por qué `retained` importa
+El sistema utiliza **MQTT** como protocolo de comunicación, con el teléfono actuando como el **nodo central** que procesa y distribuye toda la información.
 
-Sin `retained`, cuando enciendes la TV la pantalla queda vacía hasta que el teléfono manda el siguiente latido (hasta 20 s de "no pasa nada"). Con `retained`, el broker le entrega el último mensaje **en el instante en que se suscribe** — por eso el *estado* (sesión, última ubicación conocida, presencia) va retenido. Los *eventos* (una alerta puntual) **no** van retenido, porque si se retuviera, la TV "recibiría" la misma alerta de emergencia cada vez que se reinicia.
+---
 
-### Por qué Last Will and Testament (LWT)
+## Arquitectura del Sistema
 
-Tanto el teléfono como la TV configuran un mensaje LWT al conectarse: si la conexión se corta de forma anormal (se cierra la app, se va la luz, se pierde el WiFi), el **broker mismo** publica ese mensaje en nombre del cliente caído. Así la contraparte se entera de la desconexión sin depender de que el dispositivo caído alcance a avisar.
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                          BROKER MQTT                               │
+│                           Mosquitto                               │
+│                    (192.168.1.102:1883)                           │
+└──────┬──────────────┬──────────────┬──────────────────────────────┘
+       │              │              │
+       ▼              ▼              ▼
+┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+│  TELÉFONO   │ │     TV      │ │   RELOJ     │
+│  Android    │ │  Android TV │ │  Wear OS    │
+│             │ │             │ │             │
+│ • Centro    │ │ • Visualiza │ │ • Envía SOS │
+│ • Configura │ │ • Mapa      │ │ • Detección │
+│ • Sincroniza│ │ • Alertas   │ │   de caídas │
+└─────────────┘ └─────────────┘ └─────────────┘
+```
 
-## Flujo de vinculación de una TV nueva
+### Servicios en el Teléfono (Foreground Services)
 
-1. En el teléfono, el usuario entra a "Vincular TV". `TvVinculacionViewModel.iniciarVinculacion()` genera un código de 6 caracteres, conecta MQTT y se suscribe a `compasos/vinculacion/tv/{codigo}/solicitud`. El código se muestra en pantalla.
-2. En la TV, el usuario teclea ese mismo código. `VinculacionTvRepository.solicitarVinculacion()` se suscribe primero a `.../respuesta` (para no perderse la confirmación) y luego publica `{tvId, codigo, modelo}` en `.../solicitud`, **reintentando cada 3 s hasta 60 s** por si el teléfono todavía no se había suscrito.
-3. El teléfono recibe la solicitud → `procesarSolicitudTv()`: responde por `.../respuesta` con los datos del usuario, guarda la TV en la tabla `dispositivos` (`tipo='tv'`), arma la sesión inicial **con las últimas ubicaciones reales** de cada familiar (sacadas de `historial_ubicacion`) y la publica retenida en `compasos/tv/{tvId}/sesion`. Por último llama a `TvSyncService.sincronizarAhora()` para no esperar al siguiente latido.
-4. La TV recibe la respuesta → guarda `usuarioId/nombre/email` y marca `vinculado = true` en `ConfigTvEntity`.
-5. El servicio `TvMqttService` de la TV ya estaba corriendo y suscrito a `compasos/tv/{tvId}/#` desde que arrancó la app (independiente de la vinculación), así que el snapshot retenido le llega de inmediato y lo guarda en Room. La UI, que observa Room con `Flow`, se repinta sola.
-6. A partir de aquí, cada 20 s el teléfono vuelve a mandar el snapshot completo (late), y además cualquier SOS, alerta de familiar o ubicación nueva se empuja **al instante**, sin esperar el latido.
+| Servicio | Función | Topics MQTT |
+|----------|---------|-------------|
+| `AlertaMqttService` | Recibe SOS del reloj y alertas de familiares | `compasos/alerta/+/sos`, `compasos/familia/{userId}/alerta` |
+| `TvSyncService` | Sincroniza ubicaciones y alertas con TVs | `compasos/tv/{tvId}/*` |
 
-## Reloj (Wear OS)
+---
 
-Por instrucción explícita, **nada de `AlertaMqttService.kt` ni de los topics del reloj/familiares se modificó**. Se deja aquí completo como referencia, porque es la mitad del sistema que hace que el SOS del reloj llegue al teléfono y de ahí se reenvíe a la TV:
+## Estructura de Topics MQTT
+
+### 1. Topics del Reloj (NO modificados)
+```kotlin
+compasos/alerta/{dispositivoId}/sos     // SOS desde el reloj
+compasos/alerta/{dispositivoId}/audio   // Audio desde el reloj
+```
+
+### 2. Topics de Familiares (NO modificados)
+```kotlin
+compasos/familia/{usuarioId}/alerta     // Alerta a familiar
+compasos/familia/{usuarioId}/ubicacion  // Ubicación a familiar
+```
+
+### 3. Topics de Vinculación (NUEVOS)
+```kotlin
+compasos/vinculacion/tv/{codigo}/solicitud   // TV → Teléfono
+compasos/vinculacion/tv/{codigo}/respuesta   // Teléfono → TV
+```
+
+### 4. Topics de TV (NUEVOS)
+```kotlin
+compasos/tv/{tvId}/sesion           // Snapshot completo (retained)
+compasos/tv/{tvId}/ubicacion/{userId} // Ubicación de un familiar (retained)
+compasos/tv/{tvId}/alerta           // Alerta de emergencia
+compasos/tv/{tvId}/notificacion     // Notificación informativa
+compasos/tv/{tvId}/telefono_estado  // Presencia del teléfono (retained)
+compasos/tv/{tvId}/estado           // Presencia de la TV (retained)
+```
+
+---
+
+## Módulo Teléfono
+
+### 📄 `config/MqttConfig.kt`
+**Propósito:** Define la configuración central de MQTT y los topics del sistema.
 
 ```kotlin
 package com.utng.compasos_movil.config
 
-import android.app.*
-import android.content.Context
-import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.os.Build
-import android.os.IBinder
-import android.util.Log
-import androidx.core.app.NotificationCompat
-import com.utng.compasos_movil.AlertaPhoneRepository.AlertaPhoneRepository
-import com.utng.compasos_movil.data.AppDatabase
-import com.utng.compasos_movil.utils.SessionManager
-import kotlinx.coroutines.*
-import org.eclipse.paho.client.mqttv3.*
-import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
-
-class AlertaMqttService : Service() {
-
-    private val scope          = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var mqttClient:    MqttClient? = null
-    private lateinit var repository:     AlertaPhoneRepository
-    private lateinit var sessionManager: SessionManager
-
-    @Volatile private var familiarUserId: String? = null
-
-    companion object {
-        private const val CANAL_SVC    = "compasos_svc"
-        private const val CANAL_SOS    = "compasos_sos"
-        private const val NOTIF_SVC_ID = 9001
-        private const val EXTRA_USER   = "usuario_id"
-
-        fun iniciar(context: Context, userId: String? = null) {
-            val intent = Intent(context, AlertaMqttService::class.java).apply {
-                userId?.let { putExtra(EXTRA_USER, it) }
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                context.startForegroundService(intent)
-            else
-                context.startService(intent)
-        }
-    }
-
-    override fun onCreate() {
-        super.onCreate()
-        sessionManager = SessionManager(applicationContext)
-        crearCanales()
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIF_SVC_ID, notifServicio(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            )
-        } else {
-            startForeground(NOTIF_SVC_ID, notifServicio())
-        }
-
-        inicializarRepo()
-        conectarYSuscribir()
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val userId = intent?.getStringExtra(EXTRA_USER)
-            ?: sessionManager.obtenerUsuarioId()
-
-        if (userId != null && userId != familiarUserId) {
-            familiarUserId = userId
-            Log.d("AlertaMqttSvc", "onStartCommand → userId: $userId")
-            if (mqttClient?.isConnected == true) {
-                scope.launch { suscribirFamiliar(userId) }
-            }
-        }
-        return START_STICKY
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onDestroy() {
-        scope.cancel()
-        try { mqttClient?.disconnect() } catch (_: Exception) {}
-        super.onDestroy()
-    }
-
-    // ── Init ──────────────────────────────────────────────────────────────────
-
-    private fun inicializarRepo() {
-        val db = AppDatabase.getInstance(applicationContext)
-        repository = AlertaPhoneRepository(
-            alertaDao         = db.alertaDao(),
-            ubicacionDao      = db.ubicacionDao(),
-            audioDao          = db.audioDao(),
-            notificacionDao   = db.notificacionDao(),
-            familiaUsuarioDao = db.familiaUsuarioDao(),
-            dispositivoDao    = db.dispositivoDao(),
-            sessionManager    = sessionManager,
-            context           = applicationContext
-        )
-    }
-
-    // ── MQTT ──────────────────────────────────────────────────────────────────
-
-    private fun conectarYSuscribir() {
-        scope.launch {
-            try {
-                val clientId = "compasos_phone_${System.currentTimeMillis()}"
-                mqttClient = MqttClient(
-                    MqttConfig.BROKER_URL, clientId, MemoryPersistence()
-                ).apply {
-                    connect(MqttConnectOptions().apply {
-                        isCleanSession       = true
-                        connectionTimeout    = MqttConfig.TIMEOUT_CONEXION
-                        keepAliveInterval    = MqttConfig.KEEP_ALIVE
-                        isAutomaticReconnect = true
-                    })
-                }
-                Log.d("AlertaMqttSvc", "Conectado al broker")
-
-                // El reloj — no se toca
-                mqttClient!!.subscribe("${MqttConfig.TOPIC_ALERTA}/+/sos", 1) { _, msg ->
-                    scope.launch { manejarSOS(String(msg.payload, Charsets.UTF_8)) }
-                }
-                mqttClient!!.subscribe("${MqttConfig.TOPIC_ALERTA}/+/audio", 1) { _, msg ->
-                    scope.launch {
-                        repository.procesarAudio(String(msg.payload, Charsets.UTF_8))
-                    }
-                }
-
-                val userId = familiarUserId ?: sessionManager.obtenerUsuarioId()
-                if (userId != null) {
-                    familiarUserId = userId
-                    suscribirFamiliar(userId)
-                } else {
-                    Log.w("AlertaMqttSvc",
-                        "Sin sesión al conectar — esperando userId via onStartCommand")
-                }
-
-            } catch (e: Exception) {
-                Log.e("AlertaMqttSvc", "Error MQTT: ${e.message}")
-            }
-        }
-    }
-
-    private suspend fun suscribirFamiliar(userId: String) {
-        try {
-            val topicAlerta    = "${MqttConfig.TOPIC_FAMILIA}/$userId/alerta"
-            val topicUbicacion = "${MqttConfig.TOPIC_FAMILIA}/$userId/ubicacion"
-
-            mqttClient!!.subscribe(topicAlerta, 1) { _, msg ->
-                scope.launch { manejarAlertaFamiliar(String(msg.payload, Charsets.UTF_8)) }
-            }
-            mqttClient!!.subscribe(topicUbicacion, 1) { _, msg ->
-                scope.launch {
-                    repository.procesarUbicacionFamiliar(String(msg.payload, Charsets.UTF_8))
-                }
-            }
-            Log.d("AlertaMqttSvc", "✅ Suscrito a topics de familiar: $userId")
-        } catch (e: Exception) {
-            Log.e("AlertaMqttSvc", "Error suscribiendo familiar: ${e.message}")
-        }
-    }
-
-    // ── Handlers ──────────────────────────────────────────────────────────────
-
-    private suspend fun manejarSOS(payloadJson: String) {
-        Log.d("AlertaMqttSvc", "SOS recibido: $payloadJson")
-        val alerta = repository.procesarSOS(payloadJson) ?: return
-        // procesarSOS() ya se encarga de notificarFamiliares() y notificarTvs()
-        repository.iniciarRastreoEnVivo(alerta.id, scope)
-        mostrarNotifSOS(
-            alertaId    = alerta.id,
-            dispositivo = alerta.dispositivoId ?: "Reloj",
-            titulo      = "Alerta ${alerta.tipoAlerta} recibida"
-        )
-    }
-
-    private suspend fun manejarAlertaFamiliar(payloadJson: String) {
-        Log.d("AlertaMqttSvc", "Alerta familiar recibida: $payloadJson")
-        val alerta = repository.procesarAlertaFamiliar(payloadJson) ?: run {
-            Log.w("AlertaMqttSvc", "procesarAlertaFamiliar devolvió null")
-            return
-        }
-        Log.d("AlertaMqttSvc", "Alerta familiar guardada: ${alerta.id}")
-        mostrarNotifSOS(
-            alertaId    = alerta.id,
-            dispositivo = alerta.dispositivoId ?: "Familiar",
-            titulo      = "Un familiar necesita ayuda"
-        )
-    }
-
-    // ── Notificaciones ────────────────────────────────────────────────────────
-
-    private fun mostrarNotifSOS(alertaId: String, dispositivo: String, titulo: String) {
-        val intent = packageManager.getLaunchIntentForPackage(packageName)!!.apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("nav_route", "alertaDetalle/$alertaId")
-        }
-        val pending = PendingIntent.getActivity(
-            this, alertaId.hashCode(), intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val notif = NotificationCompat.Builder(this, CANAL_SOS)
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle("⚠️ $titulo")
-            .setContentText("Dispositivo: $dispositivo · Toca para ver la ubicación")
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
-            .setVibrate(longArrayOf(0, 500, 250, 500))
-            .setAutoCancel(true)
-            .setContentIntent(pending)
-            .build()
-
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(System.currentTimeMillis().toInt(), notif)
-    }
-
-    private fun notifServicio() = NotificationCompat.Builder(this, CANAL_SVC)
-        .setSmallIcon(android.R.drawable.ic_menu_compass)
-        .setContentTitle("CompaSOS activo")
-        .setContentText("Escuchando alertas del reloj vinculado")
-        .setPriority(NotificationCompat.PRIORITY_LOW)
-        .build()
-
-    private fun crearCanales() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            nm.createNotificationChannel(
-                NotificationChannel(CANAL_SVC, "Servicio CompaSOS",
-                    NotificationManager.IMPORTANCE_LOW)
-            )
-            nm.createNotificationChannel(
-                NotificationChannel(CANAL_SOS, "Alertas de emergencia",
-                    NotificationManager.IMPORTANCE_HIGH).apply {
-                    enableVibration(true)
-                    enableLights(true)
-                }
-            )
-        }
-    }
-}
-```
-
-Fíjate en el comentario `// El reloj — no se toca` dentro de `conectarYSuscribir()`: ese único servicio atiende **tanto** al reloj como a los familiares, y es el puente hacia `AlertaPhoneRepository`, que es donde sí se agregaron los empujes hacia la TV (sin alterar la lógica original).
-
----
-
-# ⚙️ Cómo levantar el proyecto completo (Teléfono + TV + Reloj)
-
-## Requisitos
-
-- Android Studio Hedgehog o superior, JDK 17.
-- Un teléfono/emulador Android (móvil) y un dispositivo/emulador Android TV.
-- El reloj Wear OS ya vinculado por Bluetooth al teléfono (ese emparejamiento es del sistema operativo, no de esta app).
-- **Los tres dispositivos en la misma red**, y un broker MQTT (Mosquitto) accesible por IP desde los tres.
-- Permisos de ubicación y notificaciones habilitados en el teléfono y en la TV.
-
-## 1. Levantar el broker MQTT (Mosquitto)
-
-```bash
-# instalar (Linux)
-sudo apt install mosquitto mosquitto-clients
-
-# mosquitto.conf
-listener 1883 0.0.0.0
-allow_anonymous true
-```
-
-`0.0.0.0` es obligatorio: sin eso, Mosquitto solo escucha en `localhost` y ningún dispositivo de la red podrá conectarse, aunque en el logcat diga "conectado" (se conectaría a un broker distinto o fallaría en silencio según el caso).
-
-```bash
-sudo systemctl restart mosquitto
-```
-
-Anota la IP de la máquina donde corre esto en la red local (`hostname -I` en Linux, o revisa la configuración de red en Windows/Mac).
-
-## 2. Configurar la misma IP del broker en los dos módulos
-
-Esto es **lo primero que hay que revisar si algo no llega**: teléfono y TV deben apuntar exactamente al mismo broker.
-
-```kotlin
-// telefono: app/src/main/java/com/utng/compasos_movil/config/MqttConfig.kt
-const val BROKER_URL = "tcp://TU_IP_AQUI:1883"
-
-// tv: app/src/main/java/com/example/compasos_tv/config/MqttConfig.kt
-const val BROKER_URL = "tcp://TU_IP_AQUI:1883"   // ← la MISMA IP
-```
-
-## 3. Configurar las claves de API (no se suben al repo)
-
-Ambos módulos leen sus claves desde `app/src/main/res/values/developer-config.xml`, que normalmente está en `.gitignore` porque contiene credenciales. Si no existe, créalo en cada módulo:
-
-```xml
-<!-- app/src/main/res/values/developer-config.xml -->
-<resources>
-    <string name="mapbox_access_token" translatable="false">TU_MAPBOX_TOKEN_AQUI</string>
-    <string name="youtube_api_key" translatable="false">TU_YOUTUBE_API_KEY_AQUI</string>
-</resources>
-```
-
-- `mapbox_access_token` — token público de Mapbox (móvil, para el mapa). Se obtiene en [account.mapbox.com](https://account.mapbox.com).
-- `youtube_api_key` — clave de YouTube Data API v3 (TV, módulo de videos de seguridad). Si no la configuras, el módulo de videos simplemente no carga (el código valida el placeholder y no truena: `if (apiKey.isBlank() || apiKey == "TU_YOUTUBE_API_KEY_AQUI") { ... return }`).
-
-Además, **descargar el SDK de Mapbox requiere un segundo token** (el "downloads token", distinto del público de arriba), porque `settings.gradle.kts` en ambos módulos apunta a un Maven privado de Mapbox:
-
-```kotlin
-// settings.gradle.kts (ambos módulos)
-maven {
-    url = uri("https://api.mapbox.com/downloads/v2/releases/maven")
-    credentials {
-        username = "mapbox"
-        password = providers.gradleProperty("MAPBOX_DOWNLOADS_TOKEN").getOrElse("")
-    }
-    authentication { create<BasicAuthentication>("basic") }
-}
-```
-
-Ese token va en tu `~/.gradle/gradle.properties` (fuera del repo, nunca se comitea):
-
-```properties
-MAPBOX_DOWNLOADS_TOKEN=sk.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-Se genera también en el dashboard de Mapbox, con scope `DOWNLOADS:READ`. Sin esto, el `sync` de Gradle falla al resolver `com.mapbox.maps:android`.
-
-## 4. Compilar y ejecutar el módulo TELÉFONO
-
-```bash
-git clone -b dev https://github.com/gutierrezvargasandy1/CompaSOS_Movil.git
-```
-
-1. Abrir el proyecto en Android Studio.
-2. Sincronizar Gradle (con los tokens del paso 3 ya configurados).
-3. Ejecutar en un dispositivo o emulador Android.
-4. Conceder los permisos de ubicación y notificaciones.
-5. Registrar un perfil y contactos de confianza.
-6. Iniciar sesión — esto arranca **los dos servicios en paralelo**: `AlertaMqttService.iniciar(...)` (reloj/familiares) y `TvSyncService.iniciar(...)` (TV). En el logcat deberías ver `TvSyncSvc: ✅ TvSyncService listo`.
-
-## 5. Compilar y ejecutar el módulo TV
-
-```bash
-git clone -b dev https://github.com/gutierrezvargasandy1/CompaSOS_TV.git
-```
-
-1. Abrir el proyecto en Android Studio, con un dispositivo o emulador Android TV.
-2. Sincronizar Gradle.
-3. Ejecutar la app. En el logcat busca `TvMqttSvc: ✅ Suscrito a topics de TV: tv_xxxxx` — copia ese `tvId`, lo vas a necesitar si algún día quieres probar con `mosquitto_pub` a mano.
-
-> Si ese log no aparece, revisa que `MainActivity.onCreate()` esté llamando a `TvMqttService.iniciar(applicationContext)` — sin esa línea el servicio queda declarado en el manifiesto pero nunca arranca, y la pantalla no se suscribe a nada.
-
-## 6. Vincular la TV con la cuenta
-
-1. En el **teléfono**: Dispositivos → ícono de vincular TV → aparece un código de 6 caracteres.
-2. En la **TV**: pantalla de vinculación → teclear ese código.
-3. La TV reintenta la solicitud sola cada 3 s durante 60 s, así que no importa si el teléfono tarda unos segundos en reaccionar.
-4. Al confirmar, la TV navega a la pantalla principal y en unos segundos aparecen los familiares (algunos "sin ubicación" al principio — ver nota abajo).
-
-## 7. Reloj (Wear OS)
-
-El módulo del reloj **no se modificó** en este trabajo — sigue el mismo flujo de emparejamiento y comunicación que ya tenías validado (Bluetooth con el teléfono + los topics `compasos/alerta/+/sos` y `compasos/alerta/+/audio` descritos arriba). No requiere ningún paso adicional para que la sincronización con la TV funcione: en cuanto el reloj manda un SOS, `AlertaMqttService` lo procesa igual que siempre y **automáticamente** se reenvía a las TVs vinculadas.
-
-## 8. Probar el flujo completo sin usar las tres apps
-
-Con `mosquitto-clients` instalado, desde una terminal:
-
-```bash
-# Ver todo el tráfico (déjalo abierto en otra terminal)
-mosquitto_sub -h TU_IP -t 'compasos/#' -v
-
-# Simular una alerta llegando a una TV ya vinculada
-mosquitto_pub -h TU_IP -t 'compasos/tv/tv_xxxxx/alerta' -m '{
-  "alertaId":"a1","tipoAlerta":"SOS","descripcion":"Prueba manual",
-  "emisorId":"u2","emisorNombre":"Luis Pérez",
-  "latitud":21.15,"longitud":-101.68,"fecha":"2026-08-16 12:01:00"}'
-```
-
-Si eso pinta la alerta en la TV, la mitad de la TV está bien y cualquier problema restante está del lado del teléfono (o de la IP del broker).
-
-## Dos cosas que son normales y no son bugs
-
-- **La primera vez que compilas la TV con estos cambios, se re-vincula.** `AppDatabaseTv` subió de versión y usa `fallbackToDestructiveMigration()`, así que la base local se recrea una sola vez y hay que volver a teclear el código. Después de esa vez, ya no se pierde nada.
-- **El primer minuto la pantalla se ve casi vacía.** `historial_ubicacion` (la tabla de la que la TV lee "última ubicación por persona") empieza sin datos. El dueño de la cuenta aparece en el mapa en unos ~20 s (el latido de `TvSyncService`); el resto de los familiares solo aparece cuando su propio teléfono dispara algo (un SOS, una alerta, o rastreo en vivo) — no hay, en el modelo de datos actual, un reporte continuo de ubicación de terceros sin que pase un evento.
-
----
-
-# 📡 Código relevante — Módulo TELÉFONO
-
-## `config/MqttConfig.kt`
-
-Registro central de topics. Es lo primero que hay que mirar para entender a dónde publica y de dónde escucha cada parte del teléfono.
-
-```kotlin
-package com.utng.compasos_movil.config
-
+/**
+ * Configuración central de MQTT para el módulo de teléfono.
+ * Define la URL del broker, tiempos de espera y todos los topics utilizados
+ * en la comunicación con el reloj, familiares y TVs.
+ */
 object MqttConfig {
 
     /**
      * ⚠️ ESTA IP DEBE SER IDÉNTICA A LA DEL MÓDULO TV.
+     * URL del broker MQTT (Mosquitto) en la red local.
+     * Debe ser accesible desde todos los dispositivos (teléfono, TV, reloj).
      */
     const val BROKER_URL = "tcp://192.168.1.102:1883"
 
+    /** Tiempo máximo de espera para establecer conexión (segundos) */
     const val TIMEOUT_CONEXION = 10
-    const val KEEP_ALIVE       = 60
-    const val QOS              = 1
 
-    const val TOPIC_VINCULACION = "compasos/vinculacion"
-    const val TOPIC_DISPOSITIVO = "compasos/dispositivo"
-    const val TOPIC_ALERTA      = "compasos/alerta"   // reloj — no se toca
-    const val TOPIC_FAMILIA     = "compasos/familia"  // familiares — no se toca
-    const val TOPIC_TV          = "compasos/tv"
+    /** Intervalo de keep-alive para mantener la conexión activa (segundos) */
+    const val KEEP_ALIVE = 60
+
+    /** Nivel de calidad de servicio MQTT (1 = al menos una vez) */
+    const val QOS = 1
+
+    /** Raíces de topics para cada tipo de dispositivo */
+    const val TOPIC_VINCULACION = "compasos/vinculacion"  // Vinculación de dispositivos
+    const val TOPIC_DISPOSITIVO = "compasos/dispositivo"  // Estado de dispositivos
+    const val TOPIC_ALERTA      = "compasos/alerta"       // Alertas del reloj (NO tocar)
+    const val TOPIC_FAMILIA     = "compasos/familia"      // Comunicación con familiares (NO tocar)
+    const val TOPIC_TV          = "compasos/tv"           // Sincronización con TV
 
     // ── Topics hacia la TV ────────────────────────────────────────────────────
     // La TV se suscribe a "compasos/tv/{tvId}/#", así que agregar un subtopic
     // nuevo aquí no obliga a tocar nada del otro lado.
 
-    /** Snapshot completo: usuario + familiares con ubicación. RETAINED. */
+    /**
+     * Topic para el snapshot completo de sesión.
+     * Contiene: usuario + lista de familiares con sus ubicaciones.
+     * @param tvId ID único de la TV destino
+     * @return Topic completo para enviar la sesión
+     */
     fun topicTvSesion(tvId: String) = "$TOPIC_TV/$tvId/sesion"
 
     /**
-     * Ubicación de UN familiar. El usuarioId va EN EL TOPIC para que el broker
-     * retenga la última posición de CADA uno.
+     * Topic para la ubicación de un familiar específico.
+     * El usuarioId va EN EL TOPIC para que el broker retenga la última posición de CADA uno.
+     * @param tvId ID de la TV destino
+     * @param usuarioId ID del familiar cuya ubicación se envía
+     * @return Topic completo con el ID del familiar incluido
      */
     fun topicTvUbicacion(tvId: String, usuarioId: String) =
         "$TOPIC_TV/$tvId/ubicacion/$usuarioId"
 
-    /** Alerta de emergencia. NO retained (es evento, no estado). */
+    /**
+     * Topic para alertas de emergencia.
+     * NO es retained porque una alerta es un evento puntual, no un estado.
+     * @param tvId ID de la TV destino
+     * @return Topic para enviar alertas
+     */
     fun topicTvAlerta(tvId: String) = "$TOPIC_TV/$tvId/alerta"
 
-    /** Notificación informativa. NO retained. */
+    /**
+     * Topic para notificaciones informativas.
+     * NO es retained para evitar que se repliquen al reiniciar la TV.
+     * @param tvId ID de la TV destino
+     * @return Topic para enviar notificaciones
+     */
     fun topicTvNotificacion(tvId: String) = "$TOPIC_TV/$tvId/notificacion"
 
-    /** Presencia del teléfono. RETAINED + es su Last Will. */
+    /**
+     * Topic para el estado de presencia del teléfono.
+     * ES retained y también se usa como Last Will del teléfono.
+     * @param tvId ID de la TV destino
+     * @return Topic para el estado del teléfono
+     */
     fun topicTvEstadoTelefono(tvId: String) = "$TOPIC_TV/$tvId/telefono_estado"
 
-    /** Cada cuánto el teléfono manda el snapshot completo a las TVs. */
+    /** Intervalo entre latidos del teléfono a las TVs (20 segundos) */
     const val INTERVALO_LATIDO_MS = 20_000L
 }
 ```
 
-## `config/MqttManager.kt`
+---
 
-Cliente MQTT reutilizable, con re-suscripción automática tras reconectar (el punto que más "pantallas congeladas" causaba), `retained` y Last Will.
+### 📄 `config/MqttManager.kt`
+**Propósito:** Cliente MQTT reutilizable con manejo de reconexión automática, mensajes retained y Last Will.
 
 ```kotlin
 package com.utng.compasos_movil.config
@@ -500,20 +188,47 @@ import org.eclipse.paho.client.mqttv3.*
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
 import java.util.concurrent.ConcurrentHashMap
 
+/**
+ * Administrador de conexión MQTT para el teléfono.
+ * 
+ * Características principales:
+ * - Reconexión automática al perder la conexión
+ * - Re-suscripción automática a todos los topics después de reconectar
+ * - Soporte para mensajes retained (estados)
+ * - Soporte para Last Will (presencia)
+ * - Publicación y suscripción segura con manejo de errores
+ */
 class MqttManager {
 
     companion object { private const val TAG = "MqttManager" }
 
+    // Cliente MQTT de Paho
     private var client: MqttClient? = null
+
+    // Mapa de suscripciones activas: topic → callback
     private val suscripciones = ConcurrentHashMap<String, (String, String) -> Unit>()
+
+    // Callback para notificar cuando se establece o restaura la conexión
     private var onConexion: ((reconectado: Boolean) -> Unit)? = null
 
+    /** Indica si el cliente está actualmente conectado al broker */
     val estaConectado: Boolean
-        get() = client?.isConnected == true
+        get() = client?.isConnected == false
 
+    /**
+     * Registra un callback que se ejecutará cuando la conexión se establezca
+     * o se reconecte automáticamente.
+     * @param bloque Función a ejecutar, recibe un booleano indicando si fue reconexión
+     */
     fun alConectar(bloque: (reconectado: Boolean) -> Unit) { onConexion = bloque }
 
-    /** Llamar siempre desde Dispatchers.IO */
+    /**
+     * Establece la conexión con el broker MQTT.
+     * @param clientId Identificador único del cliente (se genera automáticamente)
+     * @param lwtTopic Topic para el mensaje de Last Will (opcional)
+     * @param lwtPayload Payload del mensaje de Last Will (opcional)
+     * @throws MqttException Si falla la conexión
+     */
     @JvmOverloads
     fun conectar(
         clientId: String = "compasos_movil_${System.currentTimeMillis()}",
@@ -524,11 +239,11 @@ class MqttManager {
         try {
             val c = MqttClient(MqttConfig.BROKER_URL, clientId, MemoryPersistence())
 
+            // Configurar callbacks para eventos de conexión
             c.setCallback(object : MqttCallbackExtended {
                 override fun connectComplete(reconnect: Boolean, serverURI: String?) {
                     Log.d(TAG, if (reconnect) "🔄 Reconectado" else "✅ Conectado a $serverURI")
-                    // Este callback corre en el hilo interno de Paho y subscribe()
-                    // es bloqueante: si lo llamo aquí directo puedo trabar ese hilo.
+                    // Re-aplicar suscripciones en un hilo separado para no bloquear Paho
                     if (reconnect) Thread { reaplicarSuscripciones() }.start()
                     onConexion?.invoke(reconnect)
                 }
@@ -539,12 +254,14 @@ class MqttManager {
                 override fun deliveryComplete(token: IMqttDeliveryToken?) {}
             })
 
+            // Configurar opciones de conexión
             c.connect(MqttConnectOptions().apply {
-                isCleanSession       = true
+                isCleanSession       = true           // No persistir sesión en el broker
                 connectionTimeout    = MqttConfig.TIMEOUT_CONEXION
                 keepAliveInterval    = MqttConfig.KEEP_ALIVE
-                isAutomaticReconnect = true
+                isAutomaticReconnect = true           // Reintentar automáticamente
                 if (lwtTopic != null && lwtPayload != null) {
+                    // Configurar Last Will: mensaje que el broker publicará si el cliente cae
                     setWill(lwtTopic, lwtPayload.toByteArray(Charsets.UTF_8), 1, true)
                 }
             })
@@ -557,6 +274,10 @@ class MqttManager {
         }
     }
 
+    /**
+     * Re-aplica todas las suscripciones después de una reconexión automática.
+     * Este método se ejecuta en un hilo separado para no bloquear el callback de Paho.
+     */
     private fun reaplicarSuscripciones() {
         val c = client ?: return
         suscripciones.forEach { (topic, cb) ->
@@ -571,6 +292,7 @@ class MqttManager {
         }
     }
 
+    /** Desconecta el cliente MQTT y limpia las suscripciones */
     fun desconectar() {
         try {
             client?.takeIf { it.isConnected }?.disconnect()
@@ -584,8 +306,12 @@ class MqttManager {
     }
 
     /**
-     * @param retained true = el broker guarda el mensaje y se lo entrega a quien
-     *        se suscriba después. Úsalo para ESTADO, nunca para EVENTOS.
+     * Publica un mensaje en un topic MQTT.
+     * @param topic Topic donde publicar
+     * @param payload Contenido del mensaje (JSON)
+     * @param qos Nivel de calidad de servicio (por defecto 1)
+     * @param retained Si es true, el broker guarda el mensaje para nuevos suscriptores
+     * @throws IllegalStateException Si no hay conexión activa
      */
     @JvmOverloads
     fun publicar(
@@ -602,6 +328,10 @@ class MqttManager {
         Log.d(TAG, "► [$topic]${if (retained) "(retained)" else ""}: $payload")
     }
 
+    /**
+     * Publica un mensaje de forma segura (atrapa excepciones).
+     * @return true si la publicación fue exitosa, false si hubo error
+     */
     @JvmOverloads
     fun publicarSeguro(
         topic: String, payload: String,
@@ -612,6 +342,12 @@ class MqttManager {
         Log.e(TAG, "No se pudo publicar en $topic: ${e.message}"); false
     }
 
+    /**
+     * Suscribe un callback a un topic MQTT.
+     * @param topic Topic a suscribir (puede incluir wildcards)
+     * @param onMensaje Callback que recibe (topic, payload) cuando llega un mensaje
+     * @throws IllegalStateException Si no hay conexión activa
+     */
     fun suscribir(topic: String, onMensaje: (topic: String, payload: String) -> Unit) {
         val c = client ?: throw IllegalStateException("MQTT no conectado")
         suscripciones[topic] = onMensaje
@@ -623,6 +359,7 @@ class MqttManager {
         Log.d(TAG, "Suscrito a: $topic")
     }
 
+    /** Cancela la suscripción a un topic específico */
     fun desuscribir(topic: String) {
         try {
             suscripciones.remove(topic)
@@ -635,9 +372,10 @@ class MqttManager {
 }
 ```
 
-## `config/TvSyncService.kt` — el corazón de la sincronización
+---
 
-Foreground service nuevo, corre aparte de `AlertaMqttService` con su propio `clientId`. Hace tres cosas: manda un latido cada 20 s con el snapshot completo (retained), guarda y publica el GPS del propio teléfono en cada latido, y expone funciones estáticas que `AlertaPhoneRepository` llama para empujar datos al instante.
+### 📄 `config/TvSyncService.kt`
+**Propósito:** Servicio en primer plano que sincroniza el teléfono con las TVs. Es el corazón de la comunicación teléfono-TV.
 
 ```kotlin
 package com.utng.compasos_movil.config
@@ -661,6 +399,22 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 
+/**
+ * Servicio en primer plano que maneja la sincronización entre el teléfono y las TVs.
+ * 
+ * Características principales:
+ * - Corre en paralelo con AlertaMqttService (clientId MQTT diferente)
+ * - Envía un snapshot completo (latido) cada 20 segundos a todas las TVs vinculadas
+ * - Publica ubicaciones y alertas al instante (sin esperar el latido)
+ * - Usa mensajes retained para que las TVs reciban el estado al encenderse
+ * - Configura Last Will para notificar cuando el teléfono se desconecta
+ * 
+ * API pública estática para que AlertaPhoneRepository pueda empujar datos a la TV:
+ * - sincronizarAhora(): Fuerza el envío del snapshot
+ * - publicarUbicacion(): Envía ubicación de un familiar en tiempo real
+ * - publicarAlerta(): Envía una alerta de emergencia
+ * - publicarNotificacion(): Envía una notificación informativa
+ */
 class TvSyncService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -680,11 +434,17 @@ class TvSyncService : Service() {
         private const val NOTIF_ID   = 9101
         private const val EXTRA_USER = "usuario_id"
 
-        /** Ventana para considerar a alguien "en línea" (5 min sin reportar = offline). */
+        /** Ventana para considerar a alguien "en línea": 5 minutos sin reportar = offline */
         private const val VENTANA_EN_LINEA_MS = 5 * 60_000L
 
         @Volatile private var instancia: TvSyncService? = null
 
+        /**
+         * Inicia el servicio de sincronización con TVs.
+         * Se llama desde MainActivity al iniciar sesión o conceder permisos.
+         * @param context Contexto de la aplicación
+         * @param userId ID del usuario autenticado (opcional)
+         */
         fun iniciar(context: Context, userId: String? = null) {
             val intent = Intent(context, TvSyncService::class.java).apply {
                 userId?.let { putExtra(EXTRA_USER, it) }
@@ -695,19 +455,29 @@ class TvSyncService : Service() {
                 context.startService(intent)
         }
 
+        /** Detiene el servicio de sincronización */
         fun detener(context: Context) {
             context.stopService(Intent(context, TvSyncService::class.java))
         }
 
-        // ── API pública — llamar desde AlertaPhoneRepository ──────────────────
+        // ── API pública ──────────────────────────────────────────────────────────
 
-        /** Fuerza el snapshot completo ya mismo (tras vincular, tras editar familia). */
+        /**
+         * Fuerza el envío del snapshot completo a todas las TVs vinculadas.
+         * Se usa después de vincular una TV nueva o editar la lista de familiares.
+         */
         fun sincronizarAhora() {
             val svc = instancia ?: return
             svc.scope.launch { svc.sincronizarTvs() }
         }
 
-        /** Ubicación en vivo de un familiar → todas las TVs. */
+        /**
+         * Publica la ubicación en vivo de un familiar a todas las TVs.
+         * @param usuarioId ID del familiar cuya ubicación se publica
+         * @param latitud Coordenada de latitud
+         * @param longitud Coordenada de longitud
+         * @param fecha Fecha de la ubicación (opcional, se usa la actual por defecto)
+         */
         fun publicarUbicacion(
             usuarioId: String,
             latitud: Double,
@@ -720,7 +490,16 @@ class TvSyncService : Service() {
             svc.scope.launch { svc.enviarUbicacion(usuarioId, latitud, longitud, fecha) }
         }
 
-        /** Alerta de emergencia → todas las TVs. */
+        /**
+         * Publica una alerta de emergencia a todas las TVs.
+         * @param alertaId ID único de la alerta
+         * @param tipoAlerta Tipo de alerta (SOS, Caída, etc.)
+         * @param descripcion Descripción de la alerta
+         * @param emisorId ID de la persona que activó la alerta
+         * @param emisorNombre Nombre del emisor (opcional)
+         * @param latitud Ubicación del emisor (opcional)
+         * @param longitud Ubicación del emisor (opcional)
+         */
         fun publicarAlerta(
             alertaId: String,
             tipoAlerta: String,
@@ -748,17 +527,23 @@ class TvSyncService : Service() {
                     put("fecha", svc.fmt.format(Date()))
                 }.toString()
 
-                // Sin retained: una alerta es un evento puntual.
+                // Sin retained: una alerta es un evento puntual
                 svc.paraCadaTv { tv ->
                     svc.mqtt.publicarSeguro(MqttConfig.topicTvAlerta(tv.id), payload)
                 }
-                // Y refresca el snapshot para que la ubicación del emisor
-                // llegue al mapa sin esperar el latido.
+                // Refresca el snapshot para que la ubicación del emisor llegue al mapa
                 svc.sincronizarTvs()
             }
         }
 
-        /** Notificación informativa → todas las TVs. */
+        /**
+         * Publica una notificación informativa a todas las TVs.
+         * @param notificacionId ID único de la notificación
+         * @param alertaId ID de la alerta asociada (opcional)
+         * @param titulo Título de la notificación
+         * @param mensaje Contenido de la notificación
+         * @param tipo Tipo de notificación (info, sos, etc.)
+         */
         fun publicarNotificacion(
             notificacionId: String,
             alertaId: String?,
@@ -783,7 +568,7 @@ class TvSyncService : Service() {
         }
     }
 
-    // ── Ciclo de vida ─────────────────────────────────────────────────────────
+    // ── Ciclo de vida del servicio ─────────────────────────────────────────────
 
     override fun onCreate() {
         super.onCreate()
@@ -820,8 +605,7 @@ class TvSyncService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        // Avísale a las TVs que este teléfono se va, en vez de dejarlas
-        // mostrando datos viejos como si estuvieran vivos.
+        // Enviar estado offline a las TVs antes de morir
         try {
             runBlocking {
                 withTimeoutOrNull(1500) {
@@ -843,8 +627,12 @@ class TvSyncService : Service() {
         super.onDestroy()
     }
 
-    // ── Conexión ──────────────────────────────────────────────────────────────
+    // ── Conexión MQTT ─────────────────────────────────────────────────────────
 
+    /**
+     * Establece la conexión MQTT y configura el Last Will para que el broker
+     * notifique a las TVs cuando el teléfono se desconecte inesperadamente.
+     */
     private fun conectar() {
         scope.launch {
             var intentos = 0
@@ -874,10 +662,14 @@ class TvSyncService : Service() {
         }
     }
 
+    /**
+     * Inicia el latido periódico que envía el snapshot completo a las TVs.
+     * También limpia el historial de ubicaciones antiguo al arrancar.
+     */
     private fun iniciarLatido() {
         jobLatido?.cancel()
         jobLatido = scope.launch {
-            // Limpieza única al arrancar: el historial crece rápido.
+            // Limpieza única al arrancar: elimina ubicaciones de hace más de 24 horas
             runCatching {
                 db.historialUbicacionDao().limpiarViejas(
                     fmt.format(Date(System.currentTimeMillis() - 24 * 60 * 60_000L))
@@ -895,9 +687,12 @@ class TvSyncService : Service() {
         }
     }
 
-    // ── Publicación ───────────────────────────────────────────────────────────
+    // ── Publicación de datos ───────────────────────────────────────────────────
 
-    /** Snapshot completo a todas las TVs, retained. */
+    /**
+     * Envía el snapshot completo (usuario + familiares) a todas las TVs.
+     * El mensaje es retained para que las TVs reciban el estado al encenderse.
+     */
     private suspend fun sincronizarTvs() {
         val uid = usuarioId ?: session.obtenerUsuarioId() ?: return
         if (!mqtt.estaConectado) return
@@ -912,6 +707,10 @@ class TvSyncService : Service() {
         Log.d(TAG, "↻ Snapshot enviado a ${tvs.size} TV(s)")
     }
 
+    /**
+     * Envía la ubicación en vivo de un familiar específico a todas las TVs.
+     * Cada familiar tiene su propio topic retained para que el broker guarde la última de cada uno.
+     */
     private suspend fun enviarUbicacion(
         idUsuario: String, lat: Double, lng: Double, fecha: String?
     ) {
@@ -924,15 +723,17 @@ class TvSyncService : Service() {
         }.toString()
 
         paraCadaTv { tv ->
-            // retained por familiar: el broker guarda la última posición de
-            // CADA uno, no solo la del último que se movió.
+            // retained por familiar: el broker guarda la última posición de CADA uno
             mqtt.publicarSeguro(
                 MqttConfig.topicTvUbicacion(tv.id, idUsuario), payload, retained = true
             )
         }
     }
 
-    /** Guarda el GPS del propio teléfono y lo empuja a las TVs. */
+    /**
+     * Guarda la ubicación del propio teléfono en la base de datos y la publica a las TVs.
+     * Se ejecuta en cada latido para mantener actualizada la ubicación del dueño.
+     */
     private suspend fun registrarUbicacionPropia() {
         val uid = usuarioId ?: return
         val loc = locationRepo.obtenerUltimaUbicacion() ?: return
@@ -952,6 +753,10 @@ class TvSyncService : Service() {
         enviarUbicacion(uid, loc.latitud, loc.longitud, ahora)
     }
 
+    /**
+     * Anuncia la presencia del teléfono (online) a todas las TVs.
+     * Este mensaje es retained y también se usa como Last Will.
+     */
     private suspend fun anunciarPresencia() {
         val online = JSONObject().apply {
             put("online", true)
@@ -964,14 +769,21 @@ class TvSyncService : Service() {
         }
     }
 
+    /** Ejecuta un bloque para cada TV vinculada al usuario actual */
     private suspend fun paraCadaTv(bloque: (DispositivoEntity) -> Unit) {
         val uid = usuarioId ?: session.obtenerUsuarioId() ?: return
         if (!mqtt.estaConectado) return
         db.dispositivoDao().obtenerTvsVinculados(uid).forEach(bloque)
     }
 
-    // ── Construcción del snapshot ─────────────────────────────────────────────
+    // ── Construcción del snapshot de sesión ───────────────────────────────────
 
+    /**
+     * Construye el JSON del snapshot completo de sesión.
+     * Incluye: datos del usuario + todos sus familiares con ubicación.
+     * @param uid ID del usuario dueño de la cuenta
+     * @return String JSON con la sesión completa, o null si el usuario no existe
+     */
     private suspend fun construirSesion(uid: String): String? {
         return try {
             val usuario = db.usuarioDao().obtenerPorId(uid) ?: run {
@@ -980,9 +792,10 @@ class TvSyncService : Service() {
 
             val familiares = JSONArray()
 
-            // El dueño va primero: la TV lo quiere ver en el mapa también.
+            // El dueño va primero: la TV lo quiere ver en el mapa también
             familiares.put(jsonFamiliar(uid, usuario.nombre, usuario.apellidoPaterno, "Yo"))
 
+            // Agregar todos los familiares vinculados
             for (rel in db.familiaUsuarioDao().obtenerTodosFamiliares(uid)) {
                 val u = db.usuarioDao().obtenerPorId(rel.usuarioId) ?: continue
                 familiares.put(
@@ -1004,6 +817,14 @@ class TvSyncService : Service() {
         }
     }
 
+    /**
+     * Construye el objeto JSON de un familiar con su ubicación más reciente.
+     * @param id ID del familiar
+     * @param nombre Nombre del familiar
+     * @param apellido Apellido del familiar
+     * @param rol Rol en la familia (Yo, Miembro, etc.)
+     * @return JSONObject con los datos del familiar
+     */
     private suspend fun jsonFamiliar(
         id: String, nombre: String, apellido: String?, rol: String
     ): JSONObject {
@@ -1020,12 +841,18 @@ class TvSyncService : Service() {
         }
     }
 
+    /** Obtiene el nombre completo de un usuario por su ID */
     private suspend fun nombreDe(id: String): String {
         val u = db.usuarioDao().obtenerPorId(id) ?: return "Familiar"
         return listOfNotNull(u.nombre, u.apellidoPaterno).joinToString(" ").trim()
             .ifBlank { "Familiar" }
     }
 
+    /**
+     * Determina si una fecha es reciente (dentro de la ventana de 5 minutos).
+     * @param fecha String con la fecha en formato "yyyy-MM-dd HH:mm:ss"
+     * @return true si la fecha es reciente, false en caso contrario
+     */
     private fun esReciente(fecha: String?): Boolean {
         if (fecha.isNullOrBlank()) return false
         return try {
@@ -1058,431 +885,10 @@ class TvSyncService : Service() {
 }
 ```
 
-## `data/dao/DispositivoDao.kt`
+---
 
-```kotlin
-package com.utng.compasos_movil.data.dao
-
-import androidx.room3.Dao
-import androidx.room3.Insert
-import androidx.room3.OnConflictStrategy
-import androidx.room3.Query
-import com.utng.compasos_movil.data.entity.DispositivoEntity
-
-@Dao
-interface DispositivoDao {
-
-    /** OnConflictStrategy.REPLACE: permite re-vincular la MISMA TV sin crashear. */
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertar(dispositivo: DispositivoEntity)
-
-    @Query("SELECT * FROM dispositivos")
-    suspend fun obtenerTodos(): List<DispositivoEntity>
-
-    @Query("SELECT * FROM dispositivos WHERE usuarioId = :usuarioId")
-    suspend fun obtenerPorUsuario(usuarioId: String): List<DispositivoEntity>
-
-    @Query("SELECT * FROM dispositivos WHERE id = :id")
-    suspend fun obtenerPorId(id: String): DispositivoEntity?
-
-    @Query("UPDATE dispositivos SET bateria = :bateria, conectado = :conectado WHERE id = :id")
-    suspend fun actualizarEstado(id: String, bateria: Int?, conectado: Boolean)
-
-    @Query("""
-        SELECT * FROM dispositivos
-        WHERE tipo = 'tv'
-          AND usuarioId = :userId
-          AND conectado = 1
-    """)
-    suspend fun obtenerTvsVinculados(userId: String): List<DispositivoEntity>
-
-    @Query("UPDATE dispositivos SET conectado = 0 WHERE id = :id")
-    suspend fun desconectar(id: String)
-}
-```
-
-## `data/dao/HistorialUbicacionDao.kt`
-
-Es la fuente de "última ubicación conocida de cada persona" — la tabla `ubicaciones` no sirve para esto porque cuelga de `alertaId`, no de `usuarioId`.
-
-```kotlin
-package com.utng.compasos_movil.data.dao
-
-import androidx.room3.Dao
-import androidx.room3.Insert
-import androidx.room3.OnConflictStrategy
-import androidx.room3.Query
-import com.utng.compasos_movil.data.entity.HistorialUbicacionEntity
-import com.utng.compasos_movil.data.entity.UsuarioEntity
-
-@Dao
-interface HistorialUbicacionDao {
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertar(historial: HistorialUbicacionEntity)
-
-    @Query("SELECT * FROM historial_ubicacion WHERE usuarioId = :usuarioId ORDER BY fecha DESC")
-    suspend fun obtenerPorUsuario(usuarioId: String): List<HistorialUbicacionEntity>
-
-    @Query("SELECT * FROM usuarios WHERE id = :id LIMIT 1")
-    suspend fun obtenerPorId(id: String): UsuarioEntity?
-
-    @Query("""
-        SELECT * FROM historial_ubicacion
-        WHERE usuarioId = :usuarioId
-        ORDER BY fecha DESC
-        LIMIT 1
-    """)
-    suspend fun obtenerUltimaDeUsuario(usuarioId: String): HistorialUbicacionEntity?
-
-    /** Evita que la tabla crezca sin límite con el latido del TvSyncService. */
-    @Query("DELETE FROM historial_ubicacion WHERE fecha < :antesDe")
-    suspend fun limpiarViejas(antesDe: String)
-}
-```
-
-## `utils/TvMqttPublisher.kt`
-
-```kotlin
-package com.utng.compasos_movil.utils
-
-import com.utng.compasos_movil.config.MqttConfig
-import com.utng.compasos_movil.config.MqttManager
-import com.utng.compasos_movil.config.TvSyncService
-import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.*
-
-object TvMqttPublisher {
-
-    private val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-
-    // ── Ruta recomendada: delega en TvSyncService (ya sabe qué TVs están
-    // vinculadas, aplica retained donde toca y no revienta si el broker cae) ──
-
-    object aTodasLasTvs {
-
-        fun ubicacion(usuarioId: String, latitud: Double, longitud: Double) =
-            TvSyncService.publicarUbicacion(usuarioId, latitud, longitud)
-
-        fun alerta(
-            alertaId: String,
-            tipoAlerta: String,
-            descripcion: String?,
-            emisorId: String,
-            emisorNombre: String? = null,
-            latitud: Double? = null,
-            longitud: Double? = null
-        ) = TvSyncService.publicarAlerta(
-            alertaId, tipoAlerta, descripcion, emisorId, emisorNombre, latitud, longitud
-        )
-
-        fun notificacion(
-            notificacionId: String = UUID.randomUUID().toString(),
-            alertaId: String? = null,
-            titulo: String,
-            mensaje: String,
-            tipo: String = "info"
-        ) = TvSyncService.publicarNotificacion(notificacionId, alertaId, titulo, mensaje, tipo)
-
-        /** Fuerza el snapshot completo (usuario + familiares) ya mismo. */
-        fun sincronizar() = TvSyncService.sincronizarAhora()
-    }
-
-    // ── Ruta directa: publica a UNA TV concreta con el MqttManager que le pases ──
-
-    /** Topic: compasos/tv/{tvId}/alerta */
-    fun enviarAlertaATv(
-        mqtt: MqttManager,
-        tvId: String,
-        alertaId: String = UUID.randomUUID().toString(),
-        tipoAlerta: String,
-        descripcion: String,
-        emisorNombre: String,
-        emisorId: String,
-        latitud: Double?,
-        longitud: Double?
-    ) {
-        val payload = JSONObject().apply {
-            put("alertaId",     alertaId)
-            put("tipoAlerta",   tipoAlerta)
-            put("descripcion",  descripcion)
-            put("emisorNombre", emisorNombre)
-            put("emisorId",     emisorId)
-            latitud?.let  { put("latitud", it) }
-            longitud?.let { put("longitud", it) }
-            put("fecha", fmt.format(Date()))
-        }.toString()
-
-        mqtt.publicarSeguro(MqttConfig.topicTvAlerta(tvId), payload)
-    }
-
-    /**
-     * Topic: compasos/tv/{tvId}/ubicacion/{usuarioId}
-     * El usuarioId va EN EL TOPIC, para que retained guarde la posición de
-     * cada familiar por separado.
-     */
-    fun enviarUbicacionATv(
-        mqtt: MqttManager,
-        tvId: String,
-        usuarioId: String,
-        latitud: Double,
-        longitud: Double
-    ) {
-        val payload = JSONObject().apply {
-            put("usuarioId", usuarioId)
-            put("latitud",   latitud)
-            put("longitud",  longitud)
-            put("fecha",     fmt.format(Date()))
-            put("enLinea",   true)
-        }.toString()
-
-        mqtt.publicarSeguro(
-            MqttConfig.topicTvUbicacion(tvId, usuarioId), payload, retained = true
-        )
-    }
-
-    /** Topic: compasos/tv/{tvId}/notificacion */
-    fun enviarNotificacionATv(
-        mqtt: MqttManager,
-        tvId: String,
-        notificacionId: String = UUID.randomUUID().toString(),
-        alertaId: String?,
-        titulo: String,
-        mensaje: String,
-        tipo: String = "info"
-    ) {
-        val payload = JSONObject().apply {
-            put("notificacionId", notificacionId)
-            put("alertaId",       alertaId ?: "")
-            put("titulo",         titulo)
-            put("mensaje",        mensaje)
-            put("tipo",           tipo)
-            put("fecha",          fmt.format(Date()))
-        }.toString()
-
-        mqtt.publicarSeguro(MqttConfig.topicTvNotificacion(tvId), payload)
-    }
-}
-```
-
-## `TvVinculacionModule/TvVinculacionViewModel.kt`
-
-```kotlin
-package com.utng.compasos_movil.TvVinculacionModule
-
-import android.util.Log
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
-import com.utng.compasos_movil.config.MqttConfig
-import com.utng.compasos_movil.config.MqttManager
-import com.utng.compasos_movil.config.TvSyncService
-import com.utng.compasos_movil.data.dao.DispositivoDao
-import com.utng.compasos_movil.data.dao.FamiliaUsuarioDao
-import com.utng.compasos_movil.data.dao.HistorialUbicacionDao
-import com.utng.compasos_movil.data.dao.UsuarioDao
-import com.utng.compasos_movil.data.entity.DispositivoEntity
-import com.utng.compasos_movil.utils.SessionManager
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
-import org.json.JSONArray
-import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.*
-
-sealed class EstadoVinculacionTv {
-    object Inactivo : EstadoVinculacionTv()
-    data class Generando(val codigo: String) : EstadoVinculacionTv()
-    data class Exitosa(val modeloTv: String) : EstadoVinculacionTv()
-    data class Error(val mensaje: String) : EstadoVinculacionTv()
-}
-
-class TvVinculacionViewModel(
-    private val usuarioDao:        UsuarioDao,
-    private val dispositivoDao:    DispositivoDao,
-    private val familiaUsuarioDao: FamiliaUsuarioDao,
-    private val historialDao:      HistorialUbicacionDao,
-    private val sessionManager:    SessionManager
-) : ViewModel() {
-
-    companion object { private const val TAG = "TvVinculacionVM" }
-
-    private val mqtt = MqttManager()
-    private val fmt  = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-
-    private val _estado = MutableStateFlow<EstadoVinculacionTv>(EstadoVinculacionTv.Inactivo)
-    val estado: StateFlow<EstadoVinculacionTv> = _estado.asStateFlow()
-
-    private var codigoActivo: String? = null
-
-    fun iniciarVinculacion() {
-        val codigo = generarCodigo()
-        codigoActivo = codigo
-        _estado.value = EstadoVinculacionTv.Generando(codigo)
-
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                if (!mqtt.estaConectado) {
-                    mqtt.conectar(clientId = "compasos_vinc_${System.currentTimeMillis()}")
-                }
-                val topicSolicitud = "${MqttConfig.TOPIC_VINCULACION}/tv/$codigo/solicitud"
-                mqtt.suscribir(topicSolicitud) { _, payload ->
-                    viewModelScope.launch(Dispatchers.IO) {
-                        procesarSolicitudTv(payload, codigo)
-                    }
-                }
-                Log.d(TAG, "Esperando solicitud de la TV con código: $codigo")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error al iniciar vinculación TV: ${e.message}")
-                _estado.value = EstadoVinculacionTv.Error("Sin conexión al servidor MQTT")
-            }
-        }
-    }
-
-    private suspend fun procesarSolicitudTv(payload: String, codigoEsperado: String) {
-        if (codigoActivo != codigoEsperado) return
-        try {
-            val json   = JSONObject(payload)
-            val modelo = json.optString("modelo", "Android TV")
-            val idTv   = json.optString("tvId",
-                json.optString("dispositivoId", "tv_${UUID.randomUUID()}"))
-
-            val userId = sessionManager.obtenerUsuarioId() ?: run {
-                _estado.update { EstadoVinculacionTv.Error("Sin sesión activa") }
-                return
-            }
-            val usuario = usuarioDao.obtenerPorId(userId)
-            val nombre  = usuario?.nombre ?: sessionManager.obtenerUsuarioNombre() ?: ""
-            val email   = usuario?.correo ?: sessionManager.obtenerUsuarioEmail()  ?: ""
-
-            // 1. Responder a la TV con los datos de sesión
-            mqtt.publicar(
-                "${MqttConfig.TOPIC_VINCULACION}/tv/$codigoEsperado/respuesta",
-                JSONObject().apply {
-                    put("usuarioId", userId)
-                    put("nombre",    nombre)
-                    put("email",     email)
-                    put("tvId",      idTv)
-                    put("aceptada",  true)
-                }.toString()
-            )
-
-            // 2. Guardar la TV en Room — TvSyncService la lee de aquí
-            dispositivoDao.insertar(
-                DispositivoEntity(
-                    id               = idTv,
-                    usuarioId        = userId,
-                    tipo             = "tv",
-                    modelo           = modelo,
-                    fabricante       = json.optString("fabricante").ifBlank { null },
-                    numeroSerie      = json.optString("numeroSerie").ifBlank { null },
-                    tokenFcm         = null,
-                    bateria          = null,
-                    conectado        = true,
-                    fechaVinculacion = fmt.format(Date())
-                )
-            )
-            Log.d(TAG, "TV guardada en Room: $idTv")
-
-            // 3. Sesión inicial CON ubicaciones reales
-            val familiaresArray = JSONArray()
-            familiaresArray.put(jsonFamiliar(userId, nombre, usuario?.apellidoPaterno, "Yo"))
-
-            for (rel in familiaUsuarioDao.obtenerTodosFamiliares(userId)) {
-                val u = usuarioDao.obtenerPorId(rel.usuarioId) ?: continue
-                familiaresArray.put(
-                    jsonFamiliar(u.id, u.nombre, u.apellidoPaterno, rel.rol ?: "Miembro")
-                )
-            }
-            Log.d(TAG, "Sesión con ${familiaresArray.length()} familiar(es)")
-
-            mqtt.publicar(
-                MqttConfig.topicTvSesion(idTv),
-                JSONObject().apply {
-                    put("usuarioId",  userId)
-                    put("nombre",     nombre)
-                    put("email",      email)
-                    put("fecha",      fmt.format(Date()))
-                    put("familiares", familiaresArray)
-                }.toString(),
-                retained = true
-            )
-
-            // 4. Que el servicio empuje el snapshot completo ya mismo
-            TvSyncService.sincronizarAhora()
-
-            _estado.update { EstadoVinculacionTv.Exitosa(modelo) }
-            Log.d(TAG, "✅ TV vinculada: $modelo")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error procesando solicitud de TV: ${e.message}", e)
-            _estado.update { EstadoVinculacionTv.Error("Error al procesar la solicitud de la TV") }
-        }
-    }
-
-    private suspend fun jsonFamiliar(
-        id: String, nombre: String, apellido: String?, rol: String
-    ): JSONObject {
-        val ubi = historialDao.obtenerUltimaDeUsuario(id)
-        return JSONObject().apply {
-            put("usuarioId", id)
-            put("nombre",    nombre)
-            put("apellido",  apellido ?: "")
-            ubi?.latitud?.let  { put("latitud",  it) }
-            ubi?.longitud?.let { put("longitud", it) }
-            put("fecha",   ubi?.fecha ?: "")
-            put("enLinea", ubi != null)
-            put("rol",     rol)
-        }
-    }
-
-    fun reiniciar() {
-        codigoActivo?.let { cod ->
-            viewModelScope.launch(Dispatchers.IO) {
-                runCatching {
-                    mqtt.desuscribir("${MqttConfig.TOPIC_VINCULACION}/tv/$cod/solicitud")
-                }
-            }
-        }
-        codigoActivo  = null
-        _estado.value = EstadoVinculacionTv.Inactivo
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        viewModelScope.launch(Dispatchers.IO) { mqtt.desconectar() }
-    }
-
-    private fun generarCodigo(): String {
-        val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-        return (1..6).map { chars.random() }.joinToString("")
-    }
-}
-
-class TvVinculacionViewModelFactory(
-    private val usuarioDao:        UsuarioDao,
-    private val dispositivoDao:    DispositivoDao,
-    private val familiaUsuarioDao: FamiliaUsuarioDao,
-    private val historialDao:      HistorialUbicacionDao,
-    private val sessionManager:    SessionManager
-) : ViewModelProvider.Factory {
-    @Suppress("UNCHECKED_CAST")
-    override fun <T : ViewModel> create(modelClass: Class<T>): T =
-        TvVinculacionViewModel(
-            usuarioDao, dispositivoDao, familiaUsuarioDao, historialDao, sessionManager
-        ) as T
-}
-```
-
-`VincularTvScreen.kt` y `AppNavigation.kt` solo necesitan recibir y pasar el nuevo parámetro `historialUbicacionDao` a esta factory — es cableado, no lógica nueva.
-
-## `AlertaPhoneRepository/AlertaPhoneRepository.kt`
-
-El punto donde el flujo del reloj/familiares (sin cambios de lógica) y el flujo hacia la TV se cruzan. El constructor no cambió — `AlertaMqttService` lo sigue construyendo exactamente igual.
+### 📄 `AlertaPhoneRepository/AlertaPhoneRepository.kt`
+**Propósito:** Repositorio que procesa alertas del reloj y las reenvía a familiares y TVs.
 
 ```kotlin
 package com.utng.compasos_movil.AlertaPhoneRepository
@@ -1516,6 +922,17 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 
+/**
+ * Repositorio que procesa todas las alertas del sistema (reloj, familiares, móvil).
+ * 
+ * Puntos clave:
+ * - Procesa SOS del reloj (sin cambios de lógica)
+ * - Procesa alertas de familiares (sin cambios de lógica)
+ * - NUEVO: Reenvía todas las alertas a las TVs vinculadas usando TvSyncService
+ * - NUEVO: Publica ubicaciones en vivo a las TVs durante el rastreo
+ * 
+ * El constructor NO cambió: AlertaMqttService lo sigue construyendo igual.
+ */
 class AlertaPhoneRepository(
     private val alertaDao:         AlertaDao,
     private val ubicacionDao:      UbicacionDao,
@@ -1530,11 +947,23 @@ class AlertaPhoneRepository(
     private val locationRepo = LocationRepository(context)
     private val fmt          = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
 
-    // Sin cambiar el constructor: mismo singleton que ya usa el servicio.
+    // Historial de ubicaciones por usuario (NUEVO: para la TV)
     private val historialDao = AppDatabase.getInstance(context).historialUbicacionDao()
 
     // ── SOS (viene del reloj) — SIN CAMBIOS DE LÓGICA ────────────────────────
 
+    /**
+     * Procesa un mensaje SOS recibido del reloj.
+     * 
+     * Flujo:
+     * 1. Guarda la alerta en Room
+     * 2. Obtiene la ubicación actual del teléfono
+     * 3. Notifica a los familiares (topic compasos/familia/{userId}/alerta)
+     * 4. NUEVO: Notifica a las TVs vinculadas
+     * 
+     * @param payloadJson JSON con los datos del SOS
+     * @return AlertaEntity guardada, o null si falló
+     */
     suspend fun procesarSOS(payloadJson: String): AlertaEntity? = withContext(Dispatchers.IO) {
         try {
             val json      = JSONObject(payloadJson)
@@ -1570,10 +999,11 @@ class AlertaPhoneRepository(
                         fecha     = fmt.format(Date())
                     )
                 )
-                // ← también al historial por usuario, que es lo que lee la TV
+                // ← NUEVO: guardar en historial por usuario (lo que lee la TV)
                 guardarEnHistorial(usuarioId, ubicacion.latitud, ubicacion.longitud)
             }
 
+            // Notificar a familiares y TVs
             notificarFamiliares(alerta, usuarioId, ubicacion?.latitud, ubicacion?.longitud)
             notificarTvs(alerta, usuarioId, ubicacion?.latitud, ubicacion?.longitud)
             alerta
@@ -1585,6 +1015,10 @@ class AlertaPhoneRepository(
 
     // ── Notificación a familiares (topic compasos/familia) — SIN CAMBIOS ─────
 
+    /**
+     * Notifica a todos los familiares vinculados sobre una alerta.
+     * Se publica en compasos/familia/{usuarioId}/alerta para cada familiar.
+     */
     private suspend fun notificarFamiliares(
         alerta:    AlertaEntity,
         usuarioId: String,
@@ -1640,6 +1074,12 @@ class AlertaPhoneRepository(
 
     // ── Notificación a TVs vinculadas (NUEVO) ─────────────────────────────────
 
+    /**
+     * NUEVO: Notifica a todas las TVs vinculadas sobre una alerta.
+     * Usa la API pública de TvSyncService para:
+     * - Publicar la alerta (evento puntual)
+     * - Publicar una notificación informativa
+     */
     private suspend fun notificarTvs(
         alerta:    AlertaEntity,
         usuarioId: String,
@@ -1649,6 +1089,7 @@ class AlertaPhoneRepository(
         try {
             val nombre = sessionManager.obtenerUsuarioNombre() ?: ""
 
+            // Publicar alerta de emergencia a las TVs
             TvSyncService.publicarAlerta(
                 alertaId     = alerta.id,
                 tipoAlerta   = alerta.tipoAlerta ?: "SOS",
@@ -1659,6 +1100,7 @@ class AlertaPhoneRepository(
                 longitud     = longitud
             )
 
+            // Publicar notificación informativa
             TvSyncService.publicarNotificacion(
                 notificacionId = UUID.randomUUID().toString(),
                 alertaId       = alerta.id,
@@ -1673,6 +1115,12 @@ class AlertaPhoneRepository(
 
     // ── Rastreo continuo de ubicación — SIN CAMBIOS DE LÓGICA ────────────────
 
+    /**
+     * Inicia el rastreo en vivo de ubicación para una alerta activa.
+     * Cada 3 actualizaciones (aprox. cada 30 segundos) publica la ubicación a:
+     * - Familiares (topic compasos/familia/{userId}/ubicacion)
+     * - NUEVO: TVs vinculadas (via TvSyncService.publicarUbicacion)
+     */
     fun iniciarRastreoEnVivo(alertaId: String, scope: CoroutineScope) {
         scope.launch(Dispatchers.IO) {
             val usuarioId = sessionManager.obtenerUsuarioId()
@@ -1702,6 +1150,7 @@ class AlertaPhoneRepository(
         }
     }
 
+    /** Publica la ubicación en vivo a los familiares */
     private suspend fun publicarUbicacionAFamiliares(
         alertaId: String,
         ubicacion: UbicacionActual
@@ -1735,6 +1184,10 @@ class AlertaPhoneRepository(
         }
     }
 
+    /**
+     * NUEVO: Publica la ubicación en vivo a todas las TVs vinculadas.
+     * Esto hace que el mapa de la TV se actualice en tiempo real durante un SOS.
+     */
     private suspend fun publicarUbicacionATvs(ubicacion: UbicacionActual) {
         try {
             val usuarioId = sessionManager.obtenerUsuarioId() ?: return
@@ -1765,6 +1218,10 @@ class AlertaPhoneRepository(
 
     // ── Alerta recibida como familiar ────────────────────────────────────────
 
+    /**
+     * Procesa una alerta recibida de un familiar (el usuario es el destinatario).
+     * Reenvía la alerta a las TVs para que aparezca en la pantalla.
+     */
     suspend fun procesarAlertaFamiliar(payloadJson: String): AlertaEntity? =
         withContext(Dispatchers.IO) {
             try {
@@ -1815,12 +1272,11 @@ class AlertaPhoneRepository(
                             fecha     = fmt.format(Date())
                         )
                     )
-                    // ← la ubicación del EMISOR, indexada por su usuarioId,
-                    //   para que la TV pueda pintarlo en el mapa
+                    // ← NUEVO: guardar en historial por usuario para la TV
                     if (emisorId.isNotBlank()) guardarEnHistorial(emisorId, lat, lng)
                 }
 
-                // ← reenviar a las TVs
+                // ← NUEVO: reenviar a las TVs
                 TvSyncService.publicarAlerta(
                     alertaId     = alertaId,
                     tipoAlerta   = alerta.tipoAlerta ?: "SOS",
@@ -1846,6 +1302,10 @@ class AlertaPhoneRepository(
             }
         }
 
+    /**
+     * Procesa una ubicación en vivo recibida de un familiar.
+     * NUEVO: La reenvía a las TVs para actualizar el mapa en tiempo real.
+     */
     suspend fun procesarUbicacionFamiliar(payloadJson: String) = withContext(Dispatchers.IO) {
         try {
             val json     = JSONObject(payloadJson)
@@ -1870,9 +1330,7 @@ class AlertaPhoneRepository(
                 )
             )
 
-            // ← guardar por usuarioId y empujar a la TV: este es el camino que
-            //   hace que la ubicación EN VIVO de un familiar llegue a la
-            //   pantalla, no solo la del dueño.
+            // ← NUEVO: guardar por usuarioId y empujar a la TV
             val emisorId = json.optString("usuarioId")
                 .ifBlank { json.optString("emisorId") }
 
@@ -1938,6 +1396,10 @@ class AlertaPhoneRepository(
 
     // ── Helper ────────────────────────────────────────────────────────────────
 
+    /**
+     * Guarda una ubicación en el historial por usuario.
+     * Esta tabla es la que usa la TV para mostrar la última ubicación de cada persona.
+     */
     private suspend fun guardarEnHistorial(
         usuarioId: String, lat: Double, lng: Double, fecha: String = fmt.format(Date())
     ) {
@@ -1958,212 +1420,267 @@ class AlertaPhoneRepository(
 }
 ```
 
-## `MainActivity.kt` (teléfono)
+---
+
+### 📄 `TvVinculacionModule/TvVinculacionViewModel.kt`
+**Propósito:** Maneja el proceso de vinculación de una TV nueva con el teléfono.
 
 ```kotlin
-package com.utng.compasos_movil
+package com.utng.compasos_movil.TvVinculacionModule
 
-import android.Manifest
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
-import android.os.Bundle
 import android.util.Log
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
-import com.utng.compasos_movil.config.AlertaMqttService
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.utng.compasos_movil.config.MqttConfig
+import com.utng.compasos_movil.config.MqttManager
 import com.utng.compasos_movil.config.TvSyncService
-import com.utng.compasos_movil.data.AppDatabase
-import com.utng.compasos_movil.navigation.AppNavigation
-import com.utng.compasos_movil.ui.theme.CompaSOS_MovilTheme
+import com.utng.compasos_movil.data.dao.DispositivoDao
+import com.utng.compasos_movil.data.dao.FamiliaUsuarioDao
+import com.utng.compasos_movil.data.dao.HistorialUbicacionDao
+import com.utng.compasos_movil.data.dao.UsuarioDao
+import com.utng.compasos_movil.data.entity.DispositivoEntity
 import com.utng.compasos_movil.utils.SessionManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.*
 
-class MainActivity : ComponentActivity() {
+/**
+ * ViewModel que maneja el proceso de vinculación de una TV nueva.
+ * 
+ * Flujo:
+ * 1. El usuario entra a "Vincular TV" en el teléfono → se genera un código de 6 caracteres
+ * 2. El usuario teclea ese código en la TV
+ * 3. La TV publica una solicitud en compasos/vinculacion/tv/{codigo}/solicitud
+ * 4. El teléfono recibe la solicitud y responde con los datos del usuario
+ * 5. Se guarda la TV en Room y se envía el snapshot inicial
+ * 6. TvSyncService toma el control de la sincronización continua
+ */
+class TvVinculacionViewModel(
+    private val usuarioDao:        UsuarioDao,
+    private val dispositivoDao:    DispositivoDao,
+    private val familiaUsuarioDao: FamiliaUsuarioDao,
+    private val historialDao:      HistorialUbicacionDao,
+    private val sessionManager:    SessionManager
+) : ViewModel() {
 
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val locationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+    companion object { private const val TAG = "TvVinculacionVM" }
 
-        val fgsLocationGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            permissions[Manifest.permission.FOREGROUND_SERVICE_LOCATION] == true
-        } else true
+    private val mqtt = MqttManager()
+    private val fmt  = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
 
-        if (locationGranted && fgsLocationGranted) {
-            iniciarServicios()
-        } else {
-            Log.e("MainActivity", "Permisos necesarios no otorgados")
-        }
-    }
+    private val _estado = MutableStateFlow<EstadoVinculacionTv>(EstadoVinculacionTv.Inactivo)
+    val estado: StateFlow<EstadoVinculacionTv> = _estado.asStateFlow()
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+    private var codigoActivo: String? = null
 
-        val db = AppDatabase.getInstance(applicationContext)
+    /**
+     * Inicia el proceso de vinculación:
+     * 1. Genera un código de 6 caracteres alfanuméricos
+     * 2. Conecta MQTT
+     * 3. Se suscribe al topic de solicitud para ese código
+     * 4. Muestra el código en pantalla
+     */
+    fun iniciarVinculacion() {
+        val codigo = generarCodigo()
+        codigoActivo = codigo
+        _estado.value = EstadoVinculacionTv.Generando(codigo)
 
-        val usuarioDao            = db.usuarioDao()
-        val perfilMedicoDao       = db.perfilMedicoDao()
-        val familiaDao            = db.familiaDao()
-        val familiaUsuarioDao     = db.familiaUsuarioDao()
-        val contactoEmergenciaDao = db.contactoEmergenciaDao()
-        val notificacionDao       = db.notificacionDao()
-        val alertaDao             = db.alertaDao()
-        val dispositivoDao        = db.dispositivoDao()
-        val historialUbicacionDao = db.historialUbicacionDao()
-        val ubicacionDao          = db.ubicacionDao()
-
-        if (hasRequiredPermissions()) iniciarServicios() else requestPermissions()
-
-        setContent {
-            CompaSOS_MovilTheme {
-                AppNavigation(
-                    usuarioDao            = usuarioDao,
-                    perfilMedicoDao       = perfilMedicoDao,
-                    familiaDao            = familiaDao,
-                    familiaUsuarioDao     = familiaUsuarioDao,
-                    contactoEmergenciaDao = contactoEmergenciaDao,
-                    notificacionDao       = notificacionDao,
-                    alertaDao             = alertaDao,
-                    dispositivoDao        = dispositivoDao,
-                    historialUbicacionDao = historialUbicacionDao,
-                    ubicacionDao          = ubicacionDao,
-                    context               = applicationContext,
-                    initialRoute          = intent.getStringExtra("nav_route")
-                )
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (!mqtt.estaConectado) {
+                    mqtt.conectar(clientId = "compasos_vinc_${System.currentTimeMillis()}")
+                }
+                val topicSolicitud = "${MqttConfig.TOPIC_VINCULACION}/tv/$codigo/solicitud"
+                mqtt.suscribir(topicSolicitud) { _, payload ->
+                    viewModelScope.launch(Dispatchers.IO) {
+                        procesarSolicitudTv(payload, codigo)
+                    }
+                }
+                Log.d(TAG, "Esperando solicitud de la TV con código: $codigo")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error al iniciar vinculación TV: ${e.message}")
+                _estado.value = EstadoVinculacionTv.Error("Sin conexión al servidor MQTT")
             }
         }
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
+    /**
+     * Procesa la solicitud de vinculación recibida de la TV.
+     * @param payload JSON con los datos de la TV (tvId, modelo, fabricante)
+     * @param codigoEsperado Código que se esperaba para esta vinculación
+     */
+    private suspend fun procesarSolicitudTv(payload: String, codigoEsperado: String) {
+        if (codigoActivo != codigoEsperado) return
+        try {
+            val json   = JSONObject(payload)
+            val modelo = json.optString("modelo", "Android TV")
+            val idTv   = json.optString("tvId",
+                json.optString("dispositivoId", "tv_${UUID.randomUUID()}"))
+
+            val userId = sessionManager.obtenerUsuarioId() ?: run {
+                _estado.update { EstadoVinculacionTv.Error("Sin sesión activa") }
+                return
+            }
+            val usuario = usuarioDao.obtenerPorId(userId)
+            val nombre  = usuario?.nombre ?: sessionManager.obtenerUsuarioNombre() ?: ""
+            val email   = usuario?.correo ?: sessionManager.obtenerUsuarioEmail()  ?: ""
+
+            // 1. Responder a la TV con los datos de sesión
+            mqtt.publicar(
+                "${MqttConfig.TOPIC_VINCULACION}/tv/$codigoEsperado/respuesta",
+                JSONObject().apply {
+                    put("usuarioId", userId)
+                    put("nombre",    nombre)
+                    put("email",     email)
+                    put("tvId",      idTv)
+                    put("aceptada",  true)
+                }.toString()
+            )
+
+            // 2. Guardar la TV en Room — TvSyncService la lee de aquí
+            dispositivoDao.insertar(
+                DispositivoEntity(
+                    id               = idTv,
+                    usuarioId        = userId,
+                    tipo             = "tv",
+                    modelo           = modelo,
+                    fabricante       = json.optString("fabricante").ifBlank { null },
+                    numeroSerie      = json.optString("numeroSerie").ifBlank { null },
+                    tokenFcm         = null,
+                    bateria          = null,
+                    conectado        = true,
+                    fechaVinculacion = fmt.format(Date())
+                )
+            )
+            Log.d(TAG, "TV guardada en Room: $idTv")
+
+            // 3. Sesión inicial CON ubicaciones reales de todos los familiares
+            val familiaresArray = JSONArray()
+            familiaresArray.put(jsonFamiliar(userId, nombre, usuario?.apellidoPaterno, "Yo"))
+
+            for (rel in familiaUsuarioDao.obtenerTodosFamiliares(userId)) {
+                val u = usuarioDao.obtenerPorId(rel.usuarioId) ?: continue
+                familiaresArray.put(
+                    jsonFamiliar(u.id, u.nombre, u.apellidoPaterno, rel.rol ?: "Miembro")
+                )
+            }
+            Log.d(TAG, "Sesión con ${familiaresArray.length()} familiar(es)")
+
+            // Publicar el snapshot inicial (retained)
+            mqtt.publicar(
+                MqttConfig.topicTvSesion(idTv),
+                JSONObject().apply {
+                    put("usuarioId",  userId)
+                    put("nombre",     nombre)
+                    put("email",      email)
+                    put("fecha",      fmt.format(Date()))
+                    put("familiares", familiaresArray)
+                }.toString(),
+                retained = true
+            )
+
+            // 4. Que el servicio empuje el snapshot completo ya mismo
+            TvSyncService.sincronizarAhora()
+
+            _estado.update { EstadoVinculacionTv.Exitosa(modelo) }
+            Log.d(TAG, "✅ TV vinculada: $modelo")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error procesando solicitud de TV: ${e.message}", e)
+            _estado.update { EstadoVinculacionTv.Error("Error al procesar la solicitud de la TV") }
+        }
     }
 
     /**
-     * AlertaMqttService = reloj + familiares (NO se toca).
-     * TvSyncService     = pantalla TV, corre en paralelo con su propio
-     *                     clientId, no interfiere con el otro.
+     * Construye el JSON de un familiar con su última ubicación conocida.
+     * Se usa para el snapshot inicial al vincular la TV.
      */
-    private fun iniciarServicios() {
-        val userId = SessionManager(applicationContext).obtenerUsuarioId()
-        AlertaMqttService.iniciar(applicationContext, userId)
-        TvSyncService.iniciar(applicationContext, userId)
+    private suspend fun jsonFamiliar(
+        id: String, nombre: String, apellido: String?, rol: String
+    ): JSONObject {
+        val ubi = historialDao.obtenerUltimaDeUsuario(id)
+        return JSONObject().apply {
+            put("usuarioId", id)
+            put("nombre",    nombre)
+            put("apellido",  apellido ?: "")
+            ubi?.latitud?.let  { put("latitud",  it) }
+            ubi?.longitud?.let { put("longitud", it) }
+            put("fecha",   ubi?.fecha ?: "")
+            put("enLinea", ubi != null)
+            put("rol",     rol)
+        }
     }
 
-    private fun hasRequiredPermissions(): Boolean {
-        val locationGranted = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-
-        val fgsLocationGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ContextCompat.checkSelfPermission(
-                this, Manifest.permission.FOREGROUND_SERVICE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-        } else true
-
-        return locationGranted && fgsLocationGranted
+    /** Limpia el estado de vinculación y cancela la suscripción */
+    fun reiniciar() {
+        codigoActivo?.let { cod ->
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching {
+                    mqtt.desuscribir("${MqttConfig.TOPIC_VINCULACION}/tv/$cod/solicitud")
+                }
+            }
+        }
+        codigoActivo  = null
+        _estado.value = EstadoVinculacionTv.Inactivo
     }
 
-    private fun requestPermissions() {
-        val permissions = mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            permissions.add(Manifest.permission.FOREGROUND_SERVICE_LOCATION)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
-        }
-        permissionLauncher.launch(permissions.toTypedArray())
+    override fun onCleared() {
+        super.onCleared()
+        viewModelScope.launch(Dispatchers.IO) { mqtt.desconectar() }
+    }
+
+    /** Genera un código alfanumérico de 6 caracteres (sin caracteres confundibles) */
+    private fun generarCodigo(): String {
+        val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // Excluye O,0,I,1
+        return (1..6).map { chars.random() }.joinToString("")
     }
 }
-```
 
-`AuthViewModel.login()` hace lo mismo, junto a donde ya arranca `AlertaMqttService`:
+/** Estados posibles del proceso de vinculación de TV */
+sealed class EstadoVinculacionTv {
+    object Inactivo : EstadoVinculacionTv()
+    data class Generando(val codigo: String) : EstadoVinculacionTv()
+    data class Exitosa(val modeloTv: String) : EstadoVinculacionTv()
+    data class Error(val mensaje: String) : EstadoVinculacionTv()
+}
 
-```kotlin
-AlertaMqttService.iniciar(getApplication(), usuario.id)
-TvSyncService.iniciar(getApplication(), usuario.id)
-```
-
-## `AndroidManifest.xml` (teléfono)
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
-
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-
-    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <application
-        android:allowBackup="true"
-        android:dataExtractionRules="@xml/data_extraction_rules"
-        android:fullBackupContent="@xml/backup_rules"
-        android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
-        android:supportsRtl="true"
-        android:theme="@style/Theme.CompaSOS_Movil">
-
-        <meta-data
-            android:name="MAPBOX_ACCESS_TOKEN"
-            android:value="@string/mapbox_access_token" />
-
-        <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:label="@string/app_name"
-            android:theme="@style/Theme.CompaSOS_Movil"
-            android:windowSoftInputMode="adjustResize">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-
-        <!-- Reloj + familiares — sin cambios -->
-        <service
-            android:name=".config.AlertaMqttService"
-            android:foregroundServiceType="location|dataSync"
-            android:exported="false" />
-
-        <!-- Sincronización con la pantalla TV -->
-        <service
-            android:name=".config.TvSyncService"
-            android:foregroundServiceType="location|dataSync"
-            android:exported="false" />
-
-    </application>
-
-</manifest>
+/** Factory para crear el ViewModel con sus dependencias */
+class TvVinculacionViewModelFactory(
+    private val usuarioDao:        UsuarioDao,
+    private val dispositivoDao:    DispositivoDao,
+    private val familiaUsuarioDao: FamiliaUsuarioDao,
+    private val historialDao:      HistorialUbicacionDao,
+    private val sessionManager:    SessionManager
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+        TvVinculacionViewModel(
+            usuarioDao, dispositivoDao, familiaUsuarioDao, historialDao, sessionManager
+        ) as T
+}
 ```
 
 ---
 
-# 📡 Código relevante — Módulo TV
+## Módulo TV
 
-## `config/MqttConfig.kt`
+### 📄 `config/MqttConfig.kt`
+**Propósito:** Configuración MQTT para el módulo de TV.
 
 ```kotlin
 package com.example.compasos_tv.config
 
+/**
+ * Configuración MQTT para el módulo de TV.
+ * La IP del broker DEBE SER IDÉNTICA a la del teléfono.
+ */
 object MqttConfig {
 
     /** ⚠️ TIENE QUE SER LA MISMA IP QUE EN EL TELÉFONO. */
@@ -2176,23 +1693,24 @@ object MqttConfig {
     const val TOPIC_TV          = "compasos/tv"
     const val TOPIC_VINCULACION = "compasos/vinculacion"
 
-    /** UNA sola suscripción con wildcard en vez de tres sueltas. */
+    /** UNA sola suscripción con wildcard en vez de tres sueltas */
     fun topicTodoDeEstaTv(tvId: String) = "$TOPIC_TV/$tvId/#"
 
     fun topicSolicitud(codigo: String) = "$TOPIC_VINCULACION/tv/$codigo/solicitud"
     fun topicRespuesta(codigo: String) = "$TOPIC_VINCULACION/tv/$codigo/respuesta"
 
-    /** Presencia de la propia TV (es su Last Will). */
+    /** Presencia de la propia TV (es su Last Will) */
     fun topicEstadoTv(tvId: String) = "$TOPIC_TV/$tvId/estado"
 
-    /** Si el teléfono no da señales en este tiempo, la UI lo marca desconectado. */
+    /** Si el teléfono no da señales en este tiempo, la UI lo marca desconectado */
     const val TIMEOUT_TELEFONO_MS = 90_000L
 }
 ```
 
-## `config/MqttManager.kt`
+---
 
-Refactorizado a **singleton** (`MqttManager.instancia`): antes `TvMqttService` y `VinculacionTvRepository` creaban cada uno el suyo, así que la confirmación de vinculación podía llegar a una conexión mientras el servicio escuchaba en la otra.
+### 📄 `config/MqttManager.kt`
+**Propósito:** Singleton MQTT para el módulo de TV.
 
 ```kotlin
 package com.example.compasos_tv.config
@@ -2202,12 +1720,18 @@ import org.eclipse.paho.client.mqttv3.*
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
 import java.util.concurrent.ConcurrentHashMap
 
+/**
+ * Singleton MQTT para la aplicación de TV.
+ * 
+ * Refactorizado a singleton para que TvMqttService y VinculacionTvRepository
+ * compartan la misma conexión y no se pierdan mensajes.
+ */
 class MqttManager private constructor() {
 
     companion object {
         private const val TAG = "TvMqtt"
 
-        /** Instancia única para toda la app de TV. Úsala siempre. */
+        /** Instancia única para toda la app de TV */
         val instancia: MqttManager by lazy { MqttManager() }
     }
 
@@ -2325,9 +1849,10 @@ class MqttManager private constructor() {
 }
 ```
 
-## `services/TvMqttService.kt` — el servicio que hace vivir la pantalla
+---
 
-Incluye el objeto `EstadoTv`, que expone el estado de conexión como `StateFlow` para que la UI distinga tres situaciones que se ven igual si no las separas: sin broker, broker-pero-sin-teléfono, y todo-bien-pero-sin-datos-todavía.
+### 📄 `services/TvMqttService.kt`
+**Propósito:** Servicio en primer plano que mantiene la TV conectada al broker MQTT y procesa los mensajes entrantes.
 
 ```kotlin
 package com.example.compasos_tv.services
@@ -2353,6 +1878,10 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 
+/**
+ * Objeto global que expone el estado de conexión de la TV.
+ * La UI observa estos StateFlows para mostrar indicadores de conexión.
+ */
 object EstadoTv {
     private val _conectadoBroker = MutableStateFlow(false)
     val conectadoBroker = _conectadoBroker.asStateFlow()
@@ -2372,6 +1901,16 @@ object EstadoTv {
     fun setError(m: String?)    { _ultimoError.value = m }
 }
 
+/**
+ * Servicio en primer plano de la TV que maneja toda la comunicación MQTT.
+ * 
+ * Características:
+ * - Se suscribe a un único wildcard: compasos/tv/{tvId}/#
+ * - Procesa todos los mensajes entrantes (sesión, ubicaciones, alertas, notificaciones)
+ * - Guarda los datos en Room para que la UI los observe via Flow
+ * - Publica el estado de la TV (online/offline) con Last Will
+ * - Vigila la presencia del teléfono (timeout de 90 segundos)
+ */
 class TvMqttService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -2422,8 +1961,12 @@ class TvMqttService : Service() {
         super.onDestroy()
     }
 
-    // ── MQTT ──────────────────────────────────────────────────────────────────
+    // ── Conexión MQTT ─────────────────────────────────────────────────────────
 
+    /**
+     * Conecta al broker y se suscribe al wildcard de esta TV.
+     * Reintenta con backoff exponencial si falla la conexión.
+     */
     private fun conectarYSuscribir() {
         scope.launch {
             val tvId = obtenerTvId(applicationContext)
@@ -2457,7 +2000,7 @@ class TvMqttService : Service() {
                         scope.launch { despachar(topic, payload) }
                     }
 
-                    // Respuesta de vinculación, si ya hay un código guardado.
+                    // Respuesta de vinculación, si ya hay un código guardado
                     db.configTvDao().obtener()?.codigoVinculacion
                         ?.takeIf { it.isNotBlank() }
                         ?.let { cod ->
@@ -2481,14 +2024,13 @@ class TvMqttService : Service() {
         }
     }
 
-    /** Reparte el mensaje según el tramo del topic después del tvId. */
+    /**
+     * Despacha el mensaje según el subtopic (después del tvId).
+     * 
+     * Ejemplo: compasos/tv/tv_abcd/sesion → sub = "sesion"
+     *          compasos/tv/tv_abcd/ubicacion/u123 → sub = "ubicacion"
+     */
     private suspend fun despachar(topic: String, payload: String) {
-        // compasos/tv/{tvId}/sesion
-        // compasos/tv/{tvId}/ubicacion/{usuarioId}
-        // compasos/tv/{tvId}/alerta
-        // compasos/tv/{tvId}/notificacion
-        // compasos/tv/{tvId}/telefono_estado
-        // compasos/tv/{tvId}/estado          ← el nuestro, se ignora
         val sub = topic.split("/").getOrNull(3) ?: return
 
         when (sub) {
@@ -2502,9 +2044,13 @@ class TvMqttService : Service() {
         }
     }
 
-    // ── Procesadores ──────────────────────────────────────────────────────────
+    // ── Procesadores de mensajes ─────────────────────────────────────────────
 
-    /** Sesión: usuario + lista de familiares con ubicación */
+    /**
+     * Procesa el snapshot completo de sesión.
+     * Actualiza el perfil del usuario y la lista de familiares.
+     * Usa guardarConservandoUbicacion() para no perder las ubicaciones existentes.
+     */
     private suspend fun procesarSesion(payloadJson: String) {
         try {
             val json   = JSONObject(payloadJson)
@@ -2528,8 +2074,7 @@ class TvMqttService : Service() {
                 val id = f.optString("usuarioId")
                 if (id.isBlank()) continue
 
-                // ⚠️ guardarConservandoUbicacion, NO insertar():
-                // insertar() con REPLACE borraba la ubicación en cada snapshot.
+                // guardarConservandoUbicacion NO pisa la ubicación si no viene en el snapshot
                 db.familiarTvDao().guardarConservandoUbicacion(
                     FamiliarTvEntity(
                         usuarioId            = id,
@@ -2549,7 +2094,10 @@ class TvMqttService : Service() {
         }
     }
 
-    /** Ubicación en vivo de un familiar específico */
+    /**
+     * Procesa una ubicación en vivo de un familiar específico.
+     * Actualiza la ubicación y marca al familiar como "en línea".
+     */
     private suspend fun procesarUbicacion(payloadJson: String) {
         try {
             val json = JSONObject(payloadJson)
@@ -2570,7 +2118,10 @@ class TvMqttService : Service() {
         }
     }
 
-    /** Alerta de emergencia enviada desde el teléfono */
+    /**
+     * Procesa una alerta de emergencia recibida del teléfono.
+     * Guarda en Room y muestra notificación en la TV.
+     */
     private suspend fun procesarAlerta(payloadJson: String) {
         try {
             val json         = JSONObject(payloadJson)
@@ -2608,7 +2159,9 @@ class TvMqttService : Service() {
         }
     }
 
-    /** Notificación informativa (no emergencia) */
+    /**
+     * Procesa una notificación informativa (no emergencia).
+     */
     private suspend fun procesarNotificacion(payloadJson: String) {
         try {
             val json = JSONObject(payloadJson)
@@ -2630,7 +2183,9 @@ class TvMqttService : Service() {
         }
     }
 
-    /** Presencia del teléfono (incluye su Last Will cuando se muere) */
+    /**
+     * Procesa el estado de presencia del teléfono (incluye su Last Will).
+     */
     private fun procesarEstadoTelefono(payloadJson: String) {
         try {
             val online = JSONObject(payloadJson).optBoolean("online", false)
@@ -2641,7 +2196,9 @@ class TvMqttService : Service() {
         }
     }
 
-    /** El teléfono confirma la vinculación con los datos del usuario */
+    /**
+     * Procesa la respuesta de vinculación del teléfono.
+     */
     private suspend fun procesarRespuestaVinculacion(payloadJson: String) {
         try {
             val json = JSONObject(payloadJson)
@@ -2659,6 +2216,10 @@ class TvMqttService : Service() {
 
     // ── Vigilancia de presencia ───────────────────────────────────────────────
 
+    /**
+     * Vigila si el teléfono ha enviado mensajes recientemente.
+     * Si pasa 90 segundos sin mensajes, marca al teléfono como desconectado.
+     */
     private fun vigilarPresenciaTelefono() {
         scope.launch {
             while (isActive) {
@@ -2717,187 +2278,10 @@ class TvMqttService : Service() {
 }
 ```
 
-## `services/VinculacionTvRepository.kt`
+---
 
-```kotlin
-package com.example.compasos_tv.services
-
-import android.content.Context
-import android.os.Build
-import android.util.Log
-import com.example.compasos_tv.config.MqttConfig
-import com.example.compasos_tv.config.MqttManager
-import com.example.compasos_tv.data.entitys.AppDatabaseTv
-import com.example.compasos_tv.data.entitys.ConfigTvEntity
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.Flow
-import org.json.JSONObject
-
-class VinculacionTvRepository(private val context: Context) {
-
-    private val db   = AppDatabaseTv.getInstance(context)
-    private val dao  = db.configTvDao()
-    private val mqtt = MqttManager.instancia   // ← compartida con TvMqttService
-
-    companion object {
-        private const val TAG = "VinculacionTv"
-        private const val REINTENTO_MS = 3_000L
-        private const val TIMEOUT_MS   = 60_000L
-    }
-
-    fun observarConfig(): Flow<ConfigTvEntity?> = dao.observar()
-
-    /**
-     * El código lo genera y muestra el TELÉFONO. El usuario lo lee ahí y lo
-     * escribe aquí en la TV.
-     * @return true si el teléfono confirmó dentro del timeout.
-     */
-    suspend fun solicitarVinculacion(
-        codigo: String,
-        onConfirmada: (usuarioId: String, nombre: String, email: String) -> Unit
-    ): Boolean = withContext(Dispatchers.IO) {
-
-        val tvId = TvMqttService.obtenerTvId(context)
-
-        if (dao.obtener() == null) {
-            dao.guardar(ConfigTvEntity(tvDeviceId = tvId))
-        }
-        dao.setCodigo(codigo)
-
-        if (!mqtt.estaConectado) {
-            try {
-                mqtt.conectar(clientId = "compasos_${tvId.take(24)}")
-            } catch (e: Exception) {
-                Log.e(TAG, "No hay broker: ${e.message}")
-                return@withContext false
-            }
-        }
-
-        val topicRespuesta = MqttConfig.topicRespuesta(codigo)
-        val confirmada = CompletableDeferred<Boolean>()
-
-        // Suscribirse ANTES de publicar para no perder la respuesta
-        mqtt.suscribir(topicRespuesta) { _, payload ->
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val json      = JSONObject(payload)
-                    val usuarioId = json.optString("usuarioId")
-                    val nombre    = json.optString("nombre")
-                    val email     = json.optString("email")
-
-                    dao.confirmarVinculacion(
-                        usuarioId = usuarioId,
-                        nombre    = nombre,
-                        email     = email,
-                        ts        = System.currentTimeMillis()
-                    )
-                    onConfirmada(usuarioId, nombre, email)
-                    Log.d(TAG, "✅ Vinculación confirmada por el teléfono")
-                    confirmada.complete(true)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error procesando respuesta: ${e.message}")
-                    confirmada.complete(false)
-                }
-            }
-        }
-
-        val payload = JSONObject().apply {
-            put("tvId",   tvId)
-            put("codigo", codigo)
-            put("modelo", Build.MODEL)
-        }.toString()
-
-        // Reintenta: el teléfono puede tardar en suscribirse.
-        val reintentos = launch {
-            while (isActive) {
-                mqtt.publicarSeguro(MqttConfig.topicSolicitud(codigo), payload)
-                Log.d(TAG, "Solicitud publicada con código: $codigo")
-                delay(REINTENTO_MS)
-            }
-        }
-
-        val ok = withTimeoutOrNull(TIMEOUT_MS) { confirmada.await() } ?: false
-
-        reintentos.cancel()
-        if (!ok) {
-            Log.w(TAG, "⏱ El teléfono no confirmó en ${TIMEOUT_MS / 1000}s")
-            mqtt.desuscribir(topicRespuesta)
-        }
-        ok
-    }
-
-    suspend fun desvincular() = withContext(Dispatchers.IO) {
-        val tvId = TvMqttService.obtenerTvId(context)
-        dao.obtener()?.codigoVinculacion?.takeIf { it.isNotBlank() }?.let {
-            mqtt.desuscribir(MqttConfig.topicRespuesta(it))
-        }
-        // Limpia el retained del broker para que la TV no reviva datos viejos
-        mqtt.publicarSeguro(MqttConfig.topicEstadoTv(tvId), "", retained = true)
-        dao.desvincular()
-    }
-}
-```
-
-## `data/entitys/NotificacionTvEntity.kt`
-
-```kotlin
-package com.example.compasos_tv.data.entitys
-
-import androidx.room.Entity
-import androidx.room.PrimaryKey
-
-/**
- * Notificaciones informativas del teléfono. Van aparte de AlertaTvEntity a
- * propósito: una alerta es una emergencia y sale en rojo; una notificación
- * es informativa.
- */
-@Entity(tableName = "notificaciones_tv")
-data class NotificacionTvEntity(
-    @PrimaryKey
-    val id:       String,
-    val alertaId: String? = null,
-    val titulo:   String,
-    val mensaje:  String,
-    val tipo:     String  = "info",
-    val fecha:    String,
-    val leida:    Boolean = false
-)
-```
-
-## `data/entitys/NotificacionTvDao.kt`
-
-```kotlin
-package com.example.compasos_tv.data.entitys
-
-import androidx.room.*
-import kotlinx.coroutines.flow.Flow
-
-@Dao
-interface NotificacionTvDao {
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertar(notificacion: NotificacionTvEntity)
-
-    @Query("SELECT * FROM notificaciones_tv ORDER BY fecha DESC LIMIT 50")
-    fun observarRecientes(): Flow<List<NotificacionTvEntity>>
-
-    @Query("SELECT * FROM notificaciones_tv ORDER BY fecha DESC")
-    fun observarTodas(): Flow<List<NotificacionTvEntity>>
-
-    @Query("SELECT COUNT(*) FROM notificaciones_tv WHERE leida = 0")
-    fun contarNoLeidas(): Flow<Int>
-
-    @Query("UPDATE notificaciones_tv SET leida = 1 WHERE id = :id")
-    suspend fun marcarLeida(id: String)
-
-    @Query("UPDATE notificaciones_tv SET leida = 1")
-    suspend fun marcarTodasLeidas()
-}
-```
-
-## `data/entitys/dao/FamiliarTvDao.kt`
-
-La transacción `guardarConservandoUbicacion()` es la que arregla el bug de "los familiares pierden su ubicación cada pocos segundos": separa la actualización de perfil de la de ubicación, y solo pisa la ubicación cuando el snapshot trae una de verdad.
+### 📄 `data/entitys/dao/FamiliarTvDao.kt`
+**Propósito:** DAO para gestionar la tabla de familiares en la TV.
 
 ```kotlin
 package com.example.compasos_tv.data.entitys
@@ -2911,6 +2295,10 @@ interface FamiliarTvDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertar(familiar: FamiliarTvEntity)
 
+    /**
+     * Actualiza la ubicación de un familiar específico.
+     * También marca al familiar como "en línea" automáticamente.
+     */
     @Query("""
         UPDATE familiares_tv
         SET latitud = :lat,
@@ -2921,6 +2309,7 @@ interface FamiliarTvDao {
     """)
     suspend fun actualizarUbicacion(id: String, lat: Double, lng: Double, fecha: String)
 
+    /** Observa todos los familiares ordenados por estado en línea y nombre */
     @Query("SELECT * FROM familiares_tv ORDER BY enLinea DESC, nombre ASC")
     fun observarTodos(): Flow<List<FamiliarTvEntity>>
 
@@ -2940,18 +2329,29 @@ interface FamiliarTvDao {
     @Query("UPDATE familiares_tv SET enLinea = :enLinea WHERE usuarioId = :id")
     suspend fun marcarEnLinea(id: String, enLinea: Boolean)
 
-    /** Los que no reportan desde hace rato dejan de estar "en línea". */
+    /** Los que no reportan desde hace rato dejan de estar "en línea" */
     @Query("UPDATE familiares_tv SET enLinea = 0 WHERE ultimaUbicacionFecha < :antesDe")
     suspend fun marcarInactivosAntesDe(antesDe: String)
 
     @Query("SELECT COUNT(*) FROM familiares_tv")
     suspend fun contar(): Int
 
+    /**
+     * Transacción que guarda un familiar conservando su ubicación.
+     * 
+     * IMPORTANTE: Este método separa la actualización del perfil de la actualización
+     * de ubicación. Solo pisa la ubicación cuando el snapshot trae una de verdad.
+     * 
+     * Esto evita el bug de "los familiares pierden su ubicación cada pocos segundos"
+     * que ocurría con insertar() usando REPLACE.
+     */
     @Transaction
     suspend fun guardarConservandoUbicacion(f: FamiliarTvEntity) {
         val insertado = insertarSiNoExiste(f)
         if (insertado == -1L) {
+            // El familiar ya existe: actualizar solo el perfil
             actualizarPerfil(f.usuarioId, f.nombre, f.apellido)
+            // Actualizar ubicación solo si viene con datos reales
             if (f.latitud != null && f.longitud != null) {
                 actualizarUbicacion(
                     id    = f.usuarioId,
@@ -2960,110 +2360,17 @@ interface FamiliarTvDao {
                     fecha = f.ultimaUbicacionFecha ?: ""
                 )
             }
-            // Después de actualizarUbicacion, porque esa query fuerza enLinea=1
+            // Después de actualizarUbicacion (que fuerza enLinea=1), restaurar el estado
             marcarEnLinea(f.usuarioId, f.enLinea)
         }
     }
 }
 ```
 
-## `data/entitys/AppDatabaseTv.kt`
+---
 
-```kotlin
-package com.example.compasos_tv.data.entitys
-
-import android.content.Context
-import androidx.room.*
-import com.example.compasos_tv.data.entitys.dao.VideoTvDao
-
-@Database(
-    entities = [
-        AlertaTvEntity::class,
-        FamiliarTvEntity::class,
-        ConfigTvEntity::class,
-        VideoTvEntity::class,
-        NotificacionTvEntity::class
-    ],
-    version = 3,                             // ← 2 → 3
-    exportSchema = false
-)
-abstract class AppDatabaseTv : RoomDatabase() {
-
-    abstract fun alertaTvDao():       AlertaTvDao
-    abstract fun familiarTvDao():     FamiliarTvDao
-    abstract fun configTvDao():       ConfigTvDao
-    abstract fun videoTvDao():        VideoTvDao
-    abstract fun notificacionTvDao(): NotificacionTvDao
-
-    companion object {
-        @Volatile private var INSTANCE: AppDatabaseTv? = null
-
-        fun getInstance(context: Context): AppDatabaseTv =
-            INSTANCE ?: synchronized(this) {
-                INSTANCE ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    AppDatabaseTv::class.java,
-                    "compasos_tv.db"
-                )
-                    // Al subir a version 3 borra y recrea. Se pierde la
-                    // vinculación guardada una vez; hay que re-vincular.
-                    .fallbackToDestructiveMigration()
-                    .build()
-                    .also { INSTANCE = it }
-            }
-    }
-}
-```
-
-## `MainActivity.kt` (TV)
-
-```kotlin
-package com.example.compasos_tv
-
-import android.os.Bundle
-import android.view.KeyEvent
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import com.example.compasos_tv.Navigation.TvNavigation
-import com.example.compasos_tv.Screan.ManejadorTeclasReproductor
-import com.example.compasos_tv.services.TvMqttService
-
-class MainActivity : ComponentActivity() {
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-
-        // ⚠️ ESTA LÍNEA ERA LA QUE FALTABA. TvMqttService estaba declarado en
-        // el manifiesto pero nadie lo arrancaba: por eso la TV nunca se
-        // suscribía a ningún topic y no llegaba nada del teléfono, aunque el
-        // broker y la vinculación estuvieran bien.
-        TvMqttService.iniciar(applicationContext)
-
-        setContent {
-            TvNavigation()
-        }
-    }
-
-    @Suppress("RestrictedApi")
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val manejado = ManejadorTeclasReproductor.actual?.invoke(event) ?: false
-        return manejado || super.dispatchKeyEvent(event)
-    }
-}
-```
-
-## `AndroidManifest.xml` (TV)
-
-```xml
-<uses-permission android:name="android.permission.INTERNET"/>
-<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-
-<service android:name=".services.TvMqttService" android:exported="false"/>
-```
-
-## `Screan/TvAlertasScreen.kt` — bandeja unificada de alertas y notificaciones
+### 📄 `Screan/TvAlertasScreen.kt`
+**Propósito:** Pantalla de bandeja unificada de alertas y notificaciones para la TV.
 
 ```kotlin
 package com.example.compasos_tv.Screan
@@ -3111,6 +2418,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+// ── Colores del tema oscuro para TV ─────────────────────────────────────────
+
 private val ACard      = Color(0xFF0F1629)
 private val ACardNueva = Color(0xFF0F1E2E)
 private val ATexto     = Color(0xFFE0E0E0)
@@ -3119,32 +2428,35 @@ private val ARojo      = Color(0xFFE53935)
 private val AAzul      = Color(0xFF1976D2)
 private val AVerde     = Color(0xFF4CAF50)
 
-/** Fila unificada: sirve tanto para alertas como para notificaciones. */
+/**
+ * Item unificado para la bandeja: sirve tanto para alertas como para notificaciones.
+ * La UI de la TV combina ambas fuentes en una sola lista ordenada por fecha.
+ */
 data class ItemBandeja(
     val id: String,
-    val esAlerta: Boolean,
+    val esAlerta: Boolean,           // true = alerta (emergencia), false = notificación
     val titulo: String,
     val subtitulo: String?,
     val detalle: String?,
-    val coords: String?,
+    val coords: String?,             // "📍 21.15, -101.68" si tiene ubicación
     val fecha: String,
     val leida: Boolean
 )
 
-// ── ViewModel: la parte que explica "cómo funciona" ─────────────────────────
+// ── ViewModel: combina alertas y notificaciones en una sola bandeja ────────
 
 class TvAlertasViewModel(app: Application) : AndroidViewModel(app) {
 
     private val db = AppDatabaseTv.getInstance(app)
 
     /**
-     * Alertas + notificaciones en una sola bandeja ordenada por fecha.
-     * La pantalla no toca MQTT: observa Room, y Room la despierta sola en
-     * cuanto TvMqttService escribe algo. MQTT → Room → Flow → Compose.
+     * Combina las alertas y notificaciones en una sola lista ordenada por fecha.
+     * La UI observa Room con Flow, Room despierta automáticamente cuando TvMqttService escribe.
+     * Flujo: MQTT → Room → Flow → Compose
      */
     val items: StateFlow<List<ItemBandeja>> = combine(
-        db.alertaTvDao().observarTodas(),
-        db.notificacionTvDao().observarTodas()
+        db.alertaTvDao().observarTodas(),      // Alertas de emergencia
+        db.notificacionTvDao().observarTodas() // Notificaciones informativas
     ) { alertas, notifs ->
         val lista = mutableListOf<ItemBandeja>()
 
@@ -3176,6 +2488,7 @@ class TvAlertasViewModel(app: Application) : AndroidViewModel(app) {
         lista.sortedByDescending { it.fecha }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /** Estado de conexión: (broker, teléfono) para mostrar indicadores en la UI */
     val estadoConexion: StateFlow<Pair<Boolean, Boolean>> = combine(
         EstadoTv.conectadoBroker, EstadoTv.telefonoEnLinea
     ) { broker, telefono -> broker to telefono }
@@ -3195,7 +2508,7 @@ class TvAlertasViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
-// ── Screen ────────────────────────────────────────────────────────────────────
+// ── Screen ───────────────────────────────────────────────────────────────────
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
@@ -3213,6 +2526,7 @@ fun TvAlertasScreen() {
         modifier            = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // ── Encabezado con contador y estado ──────────────────────────────────
         Row(
             verticalAlignment     = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -3220,6 +2534,7 @@ fun TvAlertasScreen() {
             Icon(Icons.Default.Notifications, null, tint = ARojo, modifier = Modifier.size(30.dp))
             Text("Alertas y avisos", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = ATexto)
 
+            // Contador de no leídas (badge rojo)
             if (noLeidas > 0) {
                 Box(
                     modifier = Modifier
@@ -3235,6 +2550,7 @@ fun TvAlertasScreen() {
 
             Spacer(Modifier.weight(1f))
 
+            // Indicadores de conexión (puntos verdes/rojos)
             Punto(brokerOk); Spacer(Modifier.width(6.dp))
             Text("Servidor", fontSize = 12.sp, color = ASecund)
             Spacer(Modifier.width(16.dp))
@@ -3242,6 +2558,7 @@ fun TvAlertasScreen() {
             Text("Teléfono", fontSize = 12.sp, color = ASecund)
         }
 
+        // ── Contenido: lista o mensaje vacío ──────────────────────────────────
         if (items.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(
@@ -3281,6 +2598,10 @@ private fun Punto(ok: Boolean) {
     )
 }
 
+/**
+ * Card individual para un item de la bandeja.
+ * Soporta navegación por D-pad (focus) y clic en Enter/Center.
+ */
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 private fun ItemBandejaCard(item: ItemBandeja, onClick: () -> Unit) {
@@ -3312,6 +2633,7 @@ private fun ItemBandejaCard(item: ItemBandeja, onClick: () -> Unit) {
         verticalAlignment     = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Icono circular con el tipo de item
         Box(
             modifier = Modifier.size(50.dp).background(acento.copy(alpha = 0.15f), CircleShape),
             contentAlignment = Alignment.Center
@@ -3322,6 +2644,7 @@ private fun ItemBandejaCard(item: ItemBandeja, onClick: () -> Unit) {
             )
         }
 
+        // Contenido principal: título, subtítulo, detalle, coordenadas
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(
                 verticalAlignment     = Alignment.CenterVertically,
@@ -3344,6 +2667,7 @@ private fun ItemBandejaCard(item: ItemBandeja, onClick: () -> Unit) {
             item.coords?.let { Text(it, fontSize = 12.sp, color = ASecund) }
         }
 
+        // Fecha y hora alineadas a la derecha
         Column(horizontalAlignment = Alignment.End) {
             Text(item.fecha.take(10), fontSize = 12.sp, color = ASecund)
             Text(
@@ -3356,31 +2680,30 @@ private fun ItemBandejaCard(item: ItemBandeja, onClick: () -> Unit) {
 ```
 
 ---
-# 📡 Código relevante — Módulo RELOJ (Wear OS)
 
-Esta sección contiene las clases principales involucradas en la integración del módulo **CompaSOS_WearOS** con **MQTT**, la persistencia de la configuración mediante **Room**, el proceso de **vinculación con el teléfono** y el envío de **alertas SOS**.
+## Módulo Wear OS
 
----
-
-## 1. `config/mqtt/MqttConfig.kt`
-
-Contiene la configuración principal del broker MQTT y los topics utilizados por el reloj.
-
-El reloj utiliza el mismo esquema general de topics que el teléfono, pero únicamente mantiene los topics necesarios para sus funciones.
+### 📄 `config/mqtt/MqttConfig.kt`
+**Propósito:** Configuración MQTT para el módulo de reloj.
 
 ```kotlin
 package mx.edu.utng.compasos_wearos.config.mqtt
 
+/**
+ * Configuración MQTT para el módulo de Wear OS.
+ * 
+ * El reloj utiliza un subconjunto de los topics del sistema:
+ * - vinculacion: para emparejarse con el teléfono
+ * - alerta: para enviar SOS y audio
+ * 
+ * No utiliza mensajes retained ni Last Will.
+ */
 object MqttConfig {
     /**
-     * Emulador Android → 10.0.2.2
-     * (mapea al localhost de tu máquina)
-     *
-     * Dispositivo físico → IP local de tu máquina
-     * en la misma WiFi.
-     *
-     * Ejemplo:
-     * "tcp://192.168.1.100:1883"
+     * Emulador Android → 10.0.2.2 (mapea al localhost de la máquina)
+     * Dispositivo físico → IP local de la máquina en la misma WiFi
+     * 
+     * Ejemplo: "tcp://192.168.1.100:1883"
      */
     const val BROKER_URL = "tcp://192.168.1.102:1883"
 
@@ -3395,28 +2718,10 @@ object MqttConfig {
 }
 ```
 
-### Topics utilizados
-
-| Constante           | Topic                  | Uso                                       |
-| ------------------- | ---------------------- | ----------------------------------------- |
-| `TOPIC_VINCULACION` | `compasos/vinculacion` | Vinculación del reloj con el teléfono     |
-| `TOPIC_DISPOSITIVO` | `compasos/dispositivo` | Comunicación relacionada con dispositivos |
-| `TOPIC_ALERTA`      | `compasos/alerta`      | Envío de alertas y eventos SOS            |
-
 ---
 
-# 2. `config/mqtt/MqttManager.kt`
-
-Esta clase administra la conexión del reloj con el broker MQTT.
-
-A diferencia de las implementaciones utilizadas en el teléfono y la TV, esta versión es más sencilla:
-
-* No utiliza mensajes `retained`.
-* No utiliza Last Will.
-* `isAutomaticReconnect = false`.
-* La reconexión debe realizarse manualmente cuando sea necesario.
-* Utiliza `MemoryPersistence`.
-* Utiliza QoS 1 por defecto.
+### 📄 `config/mqtt/MqttManager.kt`
+**Propósito:** Administrador MQTT para el reloj.
 
 ```kotlin
 package mx.edu.utng.compasos_wearos.config.mqtt
@@ -3425,6 +2730,15 @@ import android.util.Log
 import org.eclipse.paho.client.mqttv3.*
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
 
+/**
+ * Administrador MQTT para el módulo de Wear OS.
+ * 
+ * Características:
+ * - Versión simplificada: no usa retained ni Last Will
+ * - No tiene reconexión automática (debe hacerse manualmente)
+ * - Utiliza MemoryPersistence
+ * - QoS 1 por defecto
+ */
 class MqttManager {
 
     companion object {
@@ -3519,9 +2833,8 @@ class MqttManager {
 
     /**
      * El callback se ejecuta en el hilo interno de Paho.
-     *
-     * Desde el callback se recomienda utilizar
-     * viewModelScope.launch para actualizar el estado.
+     * Desde el callback se recomienda utilizar viewModelScope.launch
+     * para actualizar el estado.
      */
     fun suscribir(
         topic: String,
@@ -3575,48 +2888,10 @@ class MqttManager {
 }
 ```
 
-### Responsabilidades
-
-```text
-MqttManager
-│
-├── conectar()
-│   └── Establece conexión con Mosquitto
-│
-├── desconectar()
-│   └── Cierra la conexión
-│
-├── publicar()
-│   └── Envía mensajes MQTT
-│
-├── suscribir()
-│   └── Escucha mensajes MQTT
-│
-└── desuscribir()
-    └── Cancela una suscripción
-```
-
 ---
 
-# 3. `data/entity/ConfigReloj.kt`
-
-Representa la tabla principal de configuración del reloj.
-
-Se utiliza una única fila con:
-
-```text
-id = 1
-```
-
-Esta tabla almacena:
-
-* Configuración de emergencia.
-* Configuración de detección de caídas.
-* Configuración del sensor cardíaco.
-* Modo discreto.
-* Identificador del dispositivo vinculado.
-* Nombre del dispositivo vinculado.
-* Código MQTT pendiente de confirmación.
+### 📄 `data/entity/ConfigReloj.kt`
+**Propósito:** Entidad Room que almacena la configuración del reloj.
 
 ```kotlin
 package mx.edu.utng.compasos_wearos.data.entity
@@ -3624,396 +2899,69 @@ package mx.edu.utng.compasos_wearos.data.entity
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
+/**
+ * Tabla de configuración del reloj.
+ * 
+ * Se utiliza una única fila con id = 1.
+ * Almacena:
+ * - Configuración de emergencia
+ * - Configuración de detección de caídas
+ * - Configuración del sensor cardíaco
+ * - Modo discreto
+ * - Identificador del dispositivo vinculado
+ * - Código MQTT pendiente de confirmación
+ */
 @Entity(tableName = "config_reloj")
 data class ConfigReloj(
 
     @PrimaryKey
     val id: Int = 1,
 
+    /** Tiempo de presión para activar pánico (ms) */
     val tiempoPanicoMs: Int = 3000,
 
+    /** Habilitar detección por triple tap */
     val tripleTabActivado: Boolean = true,
 
+    /** Habilitar detección de caídas */
     val deteccionCaidasActiva: Boolean = true,
 
+    /** Sensibilidad para detección de caídas */
     val sensibilidadCaida: Float = 2.5f,
 
+    /** Umbral de BPM para alerta cardíaca */
     val umbralBpmAlerta: Int = 130,
 
+    /** Intervalo de monitoreo cardíaco (segundos) */
     val intervaloMonitoreoSeg: Int = 10,
 
+    /** Habilitar grabación de audio al activar emergencia */
     val audioAlActivarEmergencia: Boolean = true,
 
+    /** Duración máxima del audio (segundos) */
     val duracionAudioSeg: Int = 30,
 
+    /** Modo discreto: vibración en lugar de sonidos visibles */
     val modoDiscreto: Boolean = true,
 
+    /** ID del dispositivo vinculado (teléfono) */
     val deviceIdVinculado: String = "",
 
+    /** Nombre del dispositivo vinculado */
     val nombreDispositivoVinculado: String = "",
 
-    // Código MQTT pendiente de confirmar
+    /** Código MQTT pendiente de confirmar */
     val codigoVinculacion: String = "",
 
-    val ultimaActualizacion: Long =
-        System.currentTimeMillis()
+    /** Timestamp de la última actualización */
+    val ultimaActualizacion: Long = System.currentTimeMillis()
 )
 ```
 
 ---
 
-# 4. `data/dao/ConfigRelojDao.kt`
-
-El DAO permite consultar y modificar la configuración almacenada en Room.
-
-```kotlin
-package mx.edu.utng.compasos_wearos.data.dao
-
-import androidx.room.*
-import kotlinx.coroutines.flow.Flow
-import mx.edu.utng.compasos_wearos.data.entity.ConfigReloj
-
-@Dao
-interface ConfigRelojDao {
-
-    @Query(
-        "SELECT * FROM config_reloj WHERE id = 1"
-    )
-    fun observarConfig(): Flow<ConfigReloj?>
-
-    @Query(
-        "SELECT * FROM config_reloj WHERE id = 1"
-    )
-    suspend fun obtenerConfig(): ConfigReloj?
-
-    @Insert(
-        onConflict = OnConflictStrategy.REPLACE
-    )
-    suspend fun guardarConfig(
-        config: ConfigReloj
-    )
-
-    @Query(
-        "UPDATE config_reloj SET umbralBpmAlerta = :bpm WHERE id = 1"
-    )
-    suspend fun setUmbralBpm(bpm: Int)
-
-    @Query(
-        "UPDATE config_reloj SET sensibilidadCaida = :valor WHERE id = 1"
-    )
-    suspend fun setSensibilidadCaida(valor: Float)
-
-    @Query(
-        """
-        UPDATE config_reloj
-        SET deviceIdVinculado = :id,
-            nombreDispositivoVinculado = :nombre
-        WHERE id = 1
-        """
-    )
-    suspend fun setDispositivoVinculado(
-        id: String,
-        nombre: String
-    )
-
-    @Query(
-        "UPDATE config_reloj SET modoDiscreto = :activo WHERE id = 1"
-    )
-    suspend fun setModoDiscreto(activo: Boolean)
-
-    @Query(
-        "UPDATE config_reloj SET tiempoPanicoMs = :ms WHERE id = 1"
-    )
-    suspend fun setTiempoPanico(ms: Int)
-
-    // ── NUEVO: código de vinculación MQTT pendiente ──────────
-
-    @Query(
-        """
-        UPDATE config_reloj
-        SET codigoVinculacion = :codigo
-        WHERE id = 1
-        """
-    )
-    suspend fun setCodigoVinculacion(
-        codigo: String
-    )
-
-    @Query(
-        """
-        UPDATE config_reloj
-        SET codigoVinculacion = ''
-        WHERE id = 1
-        """
-    )
-    suspend fun limpiarCodigoVinculacion()
-}
-```
-
----
-
-# 5. `data/VinculacionState.kt`
-
-Define los diferentes estados posibles durante el proceso de vinculación.
-
-```kotlin
-package mx.edu.utng.compasos_wearos.data
-
-sealed class VinculacionState {
-
-    object Esperando : VinculacionState()
-
-    /**
-     * codigoEsperado != null
-     * → viene del flujo MQTT.
-     *
-     * El usuario debe introducir el código.
-     *
-     * codigoEsperado == null
-     * → viene del flujo Node/Wearable.
-     *
-     * La detección es automática.
-     */
-    data class SolicitudRecibida(
-        val nombreTelefono: String,
-        val codigoEsperado: String? = null,
-        val usuarioId: String? = null
-    ) : VinculacionState()
-
-    data class CodigoIncorrecto(
-        val codigoEsperado: String,
-        val usuarioId: String?
-    ) : VinculacionState()
-
-    object Vinculando : VinculacionState()
-
-    object Vinculado : VinculacionState()
-
-    data class Error(
-        val mensaje: String
-    ) : VinculacionState()
-}
-```
-
-### Estados
-
-```text
-VinculacionState
-│
-├── Esperando
-│
-├── SolicitudRecibida
-│   ├── codigoEsperado
-│   └── usuarioId
-│
-├── CodigoIncorrecto
-│
-├── Vinculando
-│
-├── Vinculado
-│
-└── Error
-```
-
----
-
-# 6. `data/VinculacionEvent.kt`
-
-Representa los eventos que pueden ocurrir durante la vinculación.
-
-```kotlin
-package mx.edu.utng.compasos_wearos.data
-
-sealed class VinculacionEvent {
-
-    object BuscarReloj : VinculacionEvent()
-
-    data class SolicitudVinculacion(
-        val nombreTelefono: String
-    ) : VinculacionEvent()
-
-    object Confirmar : VinculacionEvent()
-
-    object Cancelar : VinculacionEvent()
-
-    object Desconectar : VinculacionEvent()
-
-    // ── NUEVO: flujo MQTT con código ──────────────────────────
-
-    data class SolicitudMqttRecibida(
-        val codigo: String,
-        val usuarioId: String
-    ) : VinculacionEvent()
-
-    object CodigoIncorrecto : VinculacionEvent()
-}
-```
-
----
-
-# 7. `data/VinculacionManager.kt`
-
-Administra el estado de la vinculación y mantiene un `StateFlow` para que la interfaz pueda reaccionar a los cambios.
-
-También conserva compatibilidad con el flujo anterior mediante **Wearable Node API**.
-
-```kotlin
-package mx.edu.utng.compasos_wearos.data
-
-import android.content.Context
-import com.google.android.gms.wearable.Wearable
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.tasks.await
-
-class VinculacionManager {
-
-    private val _estado =
-        MutableStateFlow<VinculacionState>(
-            VinculacionState.Esperando
-        )
-
-    val estado: StateFlow<VinculacionState> =
-        _estado.asStateFlow()
-
-    suspend fun detectarTelefonoConectado(
-        context: Context
-    ) {
-        try {
-
-            val nodos =
-                Wearable
-                    .getNodeClient(context)
-                    .connectedNodes
-                    .await()
-
-            val telefono =
-                nodos.firstOrNull()
-
-            if (telefono != null) {
-
-                procesarEvento(
-                    VinculacionEvent.SolicitudVinculacion(
-                        telefono.displayName
-                    )
-                )
-            }
-
-        } catch (e: Exception) {
-            // Sin conexión todavía
-        }
-    }
-
-    fun procesarEvento(
-        evento: VinculacionEvent
-    ) {
-
-        when (evento) {
-
-            is VinculacionEvent.BuscarReloj ->
-                _estado.value =
-                    VinculacionState.Esperando
-
-            is VinculacionEvent.SolicitudVinculacion ->
-                _estado.value =
-                    VinculacionState.SolicitudRecibida(
-                        evento.nombreTelefono
-                    )
-
-            is VinculacionEvent.Confirmar ->
-                _estado.value =
-                    VinculacionState.Vinculando
-
-            is VinculacionEvent.Cancelar ->
-                _estado.value =
-                    VinculacionState.Esperando
-
-            is VinculacionEvent.Desconectar ->
-                _estado.value =
-                    VinculacionState.Esperando
-
-            // ── NUEVO ──────────────────────────────────────────
-
-            is VinculacionEvent.SolicitudMqttRecibida ->
-                _estado.value =
-                    VinculacionState.SolicitudRecibida(
-                        nombreTelefono = "Teléfono",
-                        codigoEsperado = evento.codigo,
-                        usuarioId = evento.usuarioId
-                    )
-
-            is VinculacionEvent.CodigoIncorrecto -> {
-
-                val actual =
-                    _estado.value
-
-                if (
-                    actual is VinculacionState.SolicitudRecibida &&
-                    actual.codigoEsperado != null
-                ) {
-
-                    _estado.value =
-                        VinculacionState.CodigoIncorrecto(
-                            actual.codigoEsperado,
-                            actual.usuarioId
-                        )
-                }
-            }
-        }
-    }
-
-    fun vinculacionExitosa() {
-        _estado.value =
-            VinculacionState.Vinculado
-    }
-
-    fun error(mensaje: String) {
-        _estado.value =
-            VinculacionState.Error(mensaje)
-    }
-}
-```
-
----
-
-# 8. `data/repository/VinculacionRepository.kt`
-
-Este repositorio implementa el flujo de vinculación mediante MQTT.
-
-El proceso principal es:
-
-```text
-Teléfono
-   │
-   │ Publica código
-   ▼
-compasos/vinculacion/{codigo}/solicitud
-   │
-   ▼
-Wear OS
-   │
-   ├── Recibe código
-   ├── Guarda código en Room
-   └── Solicita al usuario introducirlo
-          │
-          ▼
-     Usuario introduce código
-          │
-          ▼
-     Se compara con Room
-          │
-          ▼
-      ¿Coincide?
-       /      \
-     NO        SÍ
-     │          │
-     ▼          ▼
- Error      Publicar respuesta
-                │
-                ▼
-compasos/vinculacion/{codigo}/respuesta
-```
+### 📄 `data/repository/VinculacionRepository.kt`
+**Propósito:** Repositorio que maneja el flujo de vinculación del reloj mediante MQTT.
 
 ```kotlin
 package mx.edu.utng.compasos_wearos.data.repository
@@ -4038,6 +2986,17 @@ import mx.edu.utng.compasos_wearos.data.db.WearDatabase
 import mx.edu.utng.compasos_wearos.data.entity.ConfigReloj
 import org.json.JSONObject
 
+/**
+ * Repositorio de vinculación para el reloj.
+ * 
+ * Flujo MQTT:
+ * 1. El teléfono publica un código en compasos/vinculacion/{codigo}/solicitud
+ * 2. El reloj recibe el código y lo guarda en Room
+ * 3. El usuario introduce el código en la interfaz
+ * 4. Se valida contra el código guardado
+ * 5. Si coincide, se publica la respuesta en compasos/vinculacion/{codigo}/respuesta
+ * 6. El teléfono confirma la vinculación
+ */
 class VinculacionRepository(
     private val context: Context
 ) {
@@ -4058,8 +3017,7 @@ class VinculacionRepository(
             SupervisorJob() + Dispatchers.IO
         )
 
-    fun observarConfig():
-        Flow<ConfigReloj?> =
+    fun observarConfig(): Flow<ConfigReloj?> =
         dao.observarConfig()
 
     suspend fun guardarVinculacion(
@@ -4074,11 +3032,9 @@ class VinculacionRepository(
         dao.guardarConfig(
             configActual.copy(
                 deviceIdVinculado = nodeId,
-                nombreDispositivoVinculado =
-                    nombreTelefono,
+                nombreDispositivoVinculado = nombreTelefono,
                 codigoVinculacion = "",
-                ultimaActualizacion =
-                    System.currentTimeMillis()
+                ultimaActualizacion = System.currentTimeMillis()
             )
         )
     }
@@ -4094,12 +3050,15 @@ class VinculacionRepository(
                 deviceIdVinculado = "",
                 nombreDispositivoVinculado = "",
                 codigoVinculacion = "",
-                ultimaActualizacion =
-                    System.currentTimeMillis()
+                ultimaActualizacion = System.currentTimeMillis()
             )
         )
     }
 
+    /**
+     * Detecta el teléfono mediante Wearable Node API (mecanismo anterior).
+     * Se mantiene para compatibilidad con el flujo de vinculación por Bluetooth.
+     */
     suspend fun detectarYGuardarTelefono(
         context: Context
     ) {
@@ -4112,7 +3071,7 @@ class VinculacionRepository(
 
         if (
             estadoActual is
-                VinculacionState.SolicitudRecibida &&
+                    VinculacionState.SolicitudRecibida &&
             estadoActual.codigoEsperado == null
         ) {
 
@@ -4127,9 +3086,16 @@ class VinculacionRepository(
     }
 
     // ══════════════════════════════════════════════════════════
-    // FLUJO MQTT CON CÓDIGO
+    // FLUJO MQTT CON CÓDIGO (NUEVO)
     // ══════════════════════════════════════════════════════════
 
+    /**
+     * Escucha solicitudes de vinculación entrantes en el topic wildcard:
+     * compasos/vinculacion/+/solicitud
+     * 
+     * Al recibir una, extrae el código y lo guarda en Room, luego notifica
+     * al VinculacionManager para que la UI muestre la pantalla de ingreso de código.
+     */
     suspend fun escucharSolicitudesVinculacion() {
 
         withContext(Dispatchers.IO) {
@@ -4174,9 +3140,7 @@ class VinculacionRepository(
                                 )
 
                         } catch (e: Exception) {
-
-                            // Payload inválido.
-                            // Se ignora.
+                            // Payload inválido, se ignora
                         }
                     }
                 }
@@ -4207,8 +3171,9 @@ class VinculacionRepository(
     }
 
     /**
-     * Valida el código introducido contra el código
-     * almacenado en Room.
+     * Valida el código introducido por el usuario contra el código almacenado en Room.
+     * @param codigoIngresado Código que el usuario escribió en la UI
+     * @return true si el código coincide y la respuesta se publicó exitosamente
      */
     suspend fun confirmarCodigo(
         codigoIngresado: String
@@ -4249,35 +3214,18 @@ class VinculacionRepository(
                 }
 
                 val deviceId =
-                    "wear_${
-                        Settings.Secure.getString(
-                            context.contentResolver,
-                            Settings.Secure.ANDROID_ID
-                        )
-                    }"
+                    "wear_${ Settings.Secure.getString(
+                        context.contentResolver,
+                        Settings.Secure.ANDROID_ID
+                    )}"
 
                 val respuesta =
                     JSONObject().apply {
 
-                        put(
-                            "deviceId",
-                            deviceId
-                        )
-
-                        put(
-                            "tipo",
-                            "reloj"
-                        )
-
-                        put(
-                            "modelo",
-                            Build.MODEL
-                        )
-
-                        put(
-                            "fabricante",
-                            Build.MANUFACTURER
-                        )
+                        put("deviceId", deviceId)
+                        put("tipo", "reloj")
+                        put("modelo", Build.MODEL)
+                        put("fabricante", Build.MANUFACTURER)
 
                     }.toString()
 
@@ -4340,97 +3288,15 @@ class VinculacionRepository(
             dao.guardarConfig(ConfigReloj())
         }
 
-        dao.setTiempoPanico(
-            segundos * 1000
-        )
+        dao.setTiempoPanico(segundos * 1000)
     }
 }
 ```
 
 ---
 
-# 9. `data/repository/VinculacionPrefs.kt`
-
-Utiliza **DataStore Preferences** para almacenar un indicador booleano que determina si el reloj ya fue vinculado con un teléfono.
-
-La clave utilizada es:
-
-```text
-telefono_vinculado
-```
-
-```kotlin
-package mx.edu.utng.compasos_wearos.data.repository
-
-import android.content.Context
-import androidx.datastore.preferences.core.booleanPreferencesKey
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.preferencesDataStore
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.map
-
-val Context.dataStore by preferencesDataStore(
-    name = "compasos_prefs"
-)
-
-object VinculacionPrefs {
-
-    private val KEY_VINCULADO =
-        booleanPreferencesKey(
-            "telefono_vinculado"
-        )
-
-    fun estaVinculado(
-        context: Context
-    ): Flow<Boolean> =
-
-        context.dataStore.data.map { prefs ->
-
-            prefs[KEY_VINCULADO] ?: false
-        }
-
-    suspend fun marcarVinculado(
-        context: Context
-    ) {
-
-        context.dataStore.edit { prefs ->
-
-            prefs[KEY_VINCULADO] = true
-        }
-    }
-}
-```
-
-### Funcionamiento
-
-```text
-DataStore
-│
-└── compasos_prefs
-    │
-    └── telefono_vinculado
-        │
-        ├── false → Pantalla de vinculación
-        │
-        └── true  → Dashboard
-```
-
----
-
-# 10. `data/repository/AlertaWearRepository.kt`
-
-El reloj funciona principalmente como un **control remoto de emergencia**.
-
-Cuando el usuario activa el SOS:
-
-1. El reloj genera un `alertaId`.
-2. Obtiene el `deviceId`.
-3. Genera el payload.
-4. Publica el evento mediante MQTT.
-5. El teléfono recibe el evento.
-6. El teléfono se encarga de obtener la ubicación y crear la alerta completa.
-
-El reloj no envía directamente la ubicación dentro del flujo principal del SOS.
+### 📄 `data/repository/AlertaWearRepository.kt`
+**Propósito:** Repositorio que maneja el envío de alertas SOS desde el reloj.
 
 ```kotlin
 package mx.edu.utng.compasos_wearos.data.repository
@@ -4448,6 +3314,14 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 
+/**
+ * Repositorio de alertas para el reloj.
+ * 
+ * El reloj actúa como control remoto de emergencia:
+ * - Solo envía el trigger SOS (sin ubicación)
+ * - El teléfono se encarga de obtener la ubicación y completar la alerta
+ * - También puede enviar audio grabado desde el micrófono
+ */
 class AlertaWearRepository(
     private val context: Context
 ) {
@@ -4467,15 +3341,18 @@ class AlertaWearRepository(
         )
 
     /**
-     * El reloj actúa como control remoto:
-     * publica el trigger SOS.
-     *
-     * El teléfono es responsable de obtener
-     * la ubicación y crear la alerta completa.
+     * Envía un trigger SOS al teléfono.
+     * 
+     * Flujo:
+     * 1. Genera un alertaId único
+     * 2. Obtiene el deviceId del reloj
+     * 3. Publica en compasos/alerta/{deviceId}/sos
+     * 4. El teléfono recibe, obtiene ubicación y procesa la alerta completa
+     * 
+     * @return Pair(alertaId, dispositivoId) si se envió exitosamente, null en caso contrario
      */
     @SuppressLint("HardwareIds")
-    suspend fun enviarSOS():
-        Pair<String, String>? =
+    suspend fun enviarSOS(): Pair<String, String>? =
         withContext(Dispatchers.IO) {
 
             try {
@@ -4499,12 +3376,10 @@ class AlertaWearRepository(
                 val dispositivoId =
                     config.deviceIdVinculado.ifBlank {
 
-                        "wear_${
-                            Settings.Secure.getString(
-                                context.contentResolver,
-                                Settings.Secure.ANDROID_ID
-                            )
-                        }"
+                        "wear_${ Settings.Secure.getString(
+                            context.contentResolver,
+                            Settings.Secure.ANDROID_ID
+                        )}"
                     }
 
                 val alertaId =
@@ -4513,35 +3388,12 @@ class AlertaWearRepository(
                 val payload =
                     JSONObject().apply {
 
-                        put(
-                            "alertaId",
-                            alertaId
-                        )
-
-                        put(
-                            "dispositivoId",
-                            dispositivoId
-                        )
-
-                        put(
-                            "tipoAlerta",
-                            "SOS"
-                        )
-
-                        put(
-                            "descripcion",
-                            "Alerta de pánico desde el reloj"
-                        )
-
-                        put(
-                            "estado",
-                            "activa"
-                        )
-
-                        put(
-                            "fecha",
-                            fmt.format(Date())
-                        )
+                        put("alertaId", alertaId)
+                        put("dispositivoId", dispositivoId)
+                        put("tipoAlerta", "SOS")
+                        put("descripcion", "Alerta de pánico desde el reloj")
+                        put("estado", "activa")
+                        put("fecha", fmt.format(Date()))
 
                     }.toString()
 
@@ -4555,10 +3407,7 @@ class AlertaWearRepository(
                     "Trigger SOS publicado: $alertaId"
                 )
 
-                Pair(
-                    alertaId,
-                    dispositivoId
-                )
+                Pair(alertaId, dispositivoId)
 
             } catch (e: Exception) {
 
@@ -4572,9 +3421,10 @@ class AlertaWearRepository(
         }
 
     /**
-     * Opcional:
-     * audio del micrófono del reloj
-     * si se implementa.
+     * Publica un chunk de audio grabado desde el micrófono del reloj.
+     * @param alertaId ID de la alerta a la que pertenece el audio
+     * @param dispositivoId ID del dispositivo que envía el audio
+     * @param base64Chunk Audio codificado en base64
      */
     suspend fun publicarChunkAudio(
         alertaId: String,
@@ -4591,25 +3441,10 @@ class AlertaWearRepository(
             val payload =
                 JSONObject().apply {
 
-                    put(
-                        "id",
-                        UUID.randomUUID().toString()
-                    )
-
-                    put(
-                        "alertaId",
-                        alertaId
-                    )
-
-                    put(
-                        "audio",
-                        base64Chunk
-                    )
-
-                    put(
-                        "fecha",
-                        fmt.format(Date())
-                    )
+                    put("id", UUID.randomUUID().toString())
+                    put("alertaId", alertaId)
+                    put("audio", base64Chunk)
+                    put("fecha", fmt.format(Date()))
 
                 }.toString()
 
@@ -4629,35 +3464,10 @@ class AlertaWearRepository(
 }
 ```
 
-### Topic utilizado para SOS
-
-```text
-compasos/alerta/{dispositivoId}/sos
-```
-
-Ejemplo:
-
-```text
-compasos/alerta/wear_8f72a91c/sos
-```
-
 ---
 
-# 11. `viewmodel/VinculacionViewModel.kt`
-
-Es el componente que conecta la lógica de vinculación, MQTT, Room, DataStore y el detector de movimiento con la interfaz de usuario.
-
-Sus principales responsabilidades son:
-
-* Iniciar la escucha MQTT.
-* Observar la configuración de Room.
-* Controlar el estado de vinculación.
-* Recibir el código de vinculación.
-* Confirmar el código introducido.
-* Activar el SOS.
-* Detectar movimientos bruscos.
-* Controlar los overlays de alerta.
-* Mantener compatibilidad con el flujo anterior de Wearable Node API.
+### 📄 `viewmodel/VinculacionViewModel.kt`
+**Propósito:** ViewModel que coordina la vinculación, detección de movimientos y envío de SOS.
 
 ```kotlin
 package mx.edu.utng.compasos_wearos.viewmodel
@@ -4679,6 +3489,16 @@ import mx.edu.utng.compasos_wearos.data.repository.VinculacionPrefs
 import mx.edu.utng.compasos_wearos.data.repository.VinculacionRepository
 import mx.edu.utng.compasos_wearos.services.MovimientoDetector
 
+/**
+ * ViewModel principal del reloj.
+ * 
+ * Coordina:
+ * - Vinculación con el teléfono (MQTT + Bluetooth)
+ * - Detección de movimientos bruscos (caídas)
+ * - Envío de SOS manual o automático
+ * - Modo discreto (vibración vs sonido)
+ * - Estado de vinculación (DataStore + Room)
+ */
 class VinculacionViewModel(
     app: Application
 ) : AndroidViewModel(app) {
@@ -4697,7 +3517,6 @@ class VinculacionViewModel(
 
     // Para trackear la alerta activa
     private var alertaActivaId: String? = null
-
     private var alertaDispositivoId: String? = null
 
     val estaVinculado: StateFlow<Boolean?> =
@@ -4705,53 +3524,44 @@ class VinculacionViewModel(
             .estaVinculado(app)
             .stateIn(
                 scope = viewModelScope,
-                started =
-                    SharingStarted.WhileSubscribed(
-                        5_000
-                    ),
+                started = SharingStarted.WhileSubscribed(5_000),
                 initialValue = null
             )
 
-    val configReloj:
-        StateFlow<ConfigReloj?> =
+    val configReloj: StateFlow<ConfigReloj?> =
         repo.observarConfig()
             .stateIn(
                 scope = viewModelScope,
-                started =
-                    SharingStarted.WhileSubscribed(
-                        5_000
-                    ),
+                started = SharingStarted.WhileSubscribed(5_000),
                 initialValue = null
             )
 
-    // ── Overlay: movimiento brusco detectado ────────────────
+    // ── Overlay: movimiento brusco detectado ────────────────────────────────
 
     private val _mostrarAlertaMovimiento =
         MutableStateFlow(false)
 
-    val mostrarAlertaMovimiento:
-        StateFlow<Boolean> =
+    val mostrarAlertaMovimiento: StateFlow<Boolean> =
         _mostrarAlertaMovimiento
 
-    // ── Overlay: alerta ya enviada ───────────────────────────
+    // ── Overlay: alerta ya enviada ──────────────────────────────────────────
 
     private val _alertaEnviada =
         MutableStateFlow(false)
 
-    val alertaEnviada:
-        StateFlow<Boolean> =
+    val alertaEnviada: StateFlow<Boolean> =
         _alertaEnviada
 
     init {
 
-        // ── NUEVO: empieza a escuchar solicitudes MQTT ───────
+        // ── NUEVO: empieza a escuchar solicitudes MQTT ──────────────────────
 
         viewModelScope.launch {
 
             repo.escucharSolicitudesVinculacion()
         }
 
-        // ── Observa configuración ────────────────────────────
+        // ── Observa configuración para activar/desactivar detector ──────────
 
         viewModelScope.launch {
 
@@ -4764,13 +3574,7 @@ class VinculacionViewModel(
                 if (config.modoDiscreto) {
 
                     movimientoDetector.iniciar(
-
-                        umbral =
-                            config.sensibilidadCaida
-                                .takeIf {
-                                    it >= 18f
-                                }
-                                ?: 22f
+                        umbral = config.sensibilidadCaida.takeIf { it >= 18f } ?: 22f
                     )
 
                 } else {
@@ -4780,7 +3584,7 @@ class VinculacionViewModel(
             }
         }
 
-        // ── Escucha disparos del detector ─────────────────────
+        // ── Escucha disparos del detector de movimiento ─────────────────────
 
         viewModelScope.launch {
 
@@ -4794,32 +3598,24 @@ class VinculacionViewModel(
                         estaVinculado.value == true
                     ) {
 
-                        _mostrarAlertaMovimiento.value =
-                            true
+                        _mostrarAlertaMovimiento.value = true
                     }
                 }
         }
     }
 
-    // ── Movimiento inusual: cancelar ─────────────────────────
+    // ── Movimiento inusual ────────────────────────────────────────────────────
 
     fun descartarAlertaMovimiento() {
-
-        _mostrarAlertaMovimiento.value =
-            false
+        _mostrarAlertaMovimiento.value = false
     }
 
-    // ── Movimiento inusual: confirmar ────────────────────────
-
     fun confirmarAlertaMovimiento() {
-
-        _mostrarAlertaMovimiento.value =
-            false
-
+        _mostrarAlertaMovimiento.value = false
         dispararSOS()
     }
 
-    // ── SOS manual o por movimiento ──────────────────────────
+    // ── SOS manual o por movimiento ──────────────────────────────────────────
 
     fun dispararSOS() {
 
@@ -4842,8 +3638,7 @@ class VinculacionViewModel(
                 )
             }
 
-            _alertaEnviada.value =
-                true
+            _alertaEnviada.value = true
         }
     }
 
@@ -4851,25 +3646,20 @@ class VinculacionViewModel(
         alertaId: String,
         dispositivoId: String
     ) {
-
+        // Espacio reservado para enviar ubicación periódica si el reloj tuviera GPS
         viewModelScope.launch {
-
             repeat(10) {
-
                 delay(30_000L)
+                // Actualmente el reloj no envía ubicación; el teléfono la obtiene
             }
         }
     }
 
-    // ── Oculta pantalla "Alerta enviada" ─────────────────────
-
     fun ocultarAlertaEnviada() {
-
-        _alertaEnviada.value =
-            false
+        _alertaEnviada.value = false
     }
 
-    // ── Flujo anterior: Wearable Node API ────────────────────
+    // ── Flujo anterior: Wearable Node API (Bluetooth) ──────────────────────
 
     fun iniciarEsperaBluetooth() {
 
@@ -4886,7 +3676,7 @@ class VinculacionViewModel(
         }
     }
 
-    // ── Flujo anterior: aceptar sin código ────────────────────
+    // ── Flujo anterior: aceptar sin código ──────────────────────────────────
 
     fun aceptarVinculacion() {
 
@@ -4897,35 +3687,27 @@ class VinculacionViewModel(
 
             if (
                 estadoActual is
-                    VinculacionState.SolicitudRecibida &&
+                        VinculacionState.SolicitudRecibida &&
                 estadoActual.codigoEsperado == null
             ) {
 
                 repo.guardarVinculacion(
-
-                    nodeId =
-                        estadoActual.nombreTelefono,
-
-                    nombreTelefono =
-                        estadoActual.nombreTelefono
+                    nodeId = estadoActual.nombreTelefono,
+                    nombreTelefono = estadoActual.nombreTelefono
                 )
 
-                repo.vinculacionManager
-                    .vinculacionExitosa()
+                repo.vinculacionManager.vinculacionExitosa()
 
-                VinculacionPrefs
-                    .marcarVinculado(
-                        getApplication()
-                    )
+                VinculacionPrefs.marcarVinculado(
+                    getApplication()
+                )
             }
         }
     }
 
-    // ── NUEVO: flujo MQTT con código ──────────────────────────
+    // ── NUEVO: flujo MQTT con código ─────────────────────────────────────────
 
-    fun ingresarCodigo(
-        codigo: String
-    ) {
+    fun ingresarCodigo(codigo: String) {
 
         viewModelScope.launch {
 
@@ -4934,19 +3716,14 @@ class VinculacionViewModel(
 
             if (exito) {
 
-                VinculacionPrefs
-                    .marcarVinculado(
-                        getApplication()
-                    )
+                VinculacionPrefs.marcarVinculado(
+                    getApplication()
+                )
             }
 
-            // Si no coincide, el estado
-            // cambia automáticamente
-            // a CodigoIncorrecto.
+            // Si no coincide, el estado cambia automáticamente a CodigoIncorrecto
         }
     }
-
-    // ── NUEVO: cancelar vinculación MQTT ──────────────────────
 
     fun cancelarVinculacionMqtt() {
 
@@ -4958,44 +3735,34 @@ class VinculacionViewModel(
 
     fun cancelarVinculacion() {
 
-        repo.vinculacionManager
-            .procesarEvento(
-                VinculacionEvent.Cancelar
-            )
+        repo.vinculacionManager.procesarEvento(
+            VinculacionEvent.Cancelar
+        )
     }
 
     fun confirmarVinculacion() {
 
         viewModelScope.launch {
 
-            VinculacionPrefs
-                .marcarVinculado(
-                    getApplication()
-                )
-        }
-    }
-
-    fun setModoDiscreto(
-        activo: Boolean
-    ) {
-
-        viewModelScope.launch {
-
-            repo.setModoDiscreto(
-                activo
+            VinculacionPrefs.marcarVinculado(
+                getApplication()
             )
         }
     }
 
-    fun setTiempoPanico(
-        segundos: Int
-    ) {
+    fun setModoDiscreto(activo: Boolean) {
 
         viewModelScope.launch {
 
-            repo.setTiempoPanico(
-                segundos
-            )
+            repo.setModoDiscreto(activo)
+        }
+    }
+
+    fun setTiempoPanico(segundos: Int) {
+
+        viewModelScope.launch {
+
+            repo.setTiempoPanico(segundos)
         }
     }
 
@@ -5007,367 +3774,103 @@ class VinculacionViewModel(
     }
 
     fun simularMovimiento() {
-
-        _mostrarAlertaMovimiento.value =
-            true
+        _mostrarAlertaMovimiento.value = true
     }
 
     fun ocultarOverlayMovimiento() {
-
-        _mostrarAlertaMovimiento.value =
-            false
+        _mostrarAlertaMovimiento.value = false
     }
 }
 ```
 
 ---
 
-# 🔄 12. Flujo completo de vinculación MQTT
+## Guía de Ejecución
 
-El flujo implementado en el reloj funciona de la siguiente manera:
+### Requisitos
 
-```text
-                     TELÉFONO
-                         │
-                         │
-                         │ Publica solicitud
-                         │ con código
-                         ▼
-              ┌──────────────────────┐
-              │      MQTT BROKER      │
-              │       Mosquitto       │
-              └──────────┬───────────┘
-                         │
-                         │
-                         ▼
-                 ┌───────────────┐
-                 │    Wear OS    │
-                 │               │
-                 │ MqttManager   │
-                 └───────┬───────┘
-                         │
-                         ▼
-               VinculacionRepository
-                         │
-                         ├── Extrae código
-                         │
-                         ├── Extrae usuarioId
-                         │
-                         ▼
-                    ConfigReloj
-                      Room DB
-                         │
-                         ▼
-                VinculacionManager
-                         │
-                         ▼
-              SolicitudRecibida
-                         │
-                         ▼
-                   Interfaz UI
-                         │
-                         │ Usuario escribe
-                         │ código
-                         ▼
-                confirmarCodigo()
-                         │
-                 ┌───────┴───────┐
-                 │               │
-              Incorrecto       Correcto
-                 │               │
-                 ▼               ▼
-        CodigoIncorrecto     Genera respuesta
-                                 │
-                                 ▼
-                              MQTT
-                                 │
-                                 ▼
-                         Teléfono vincula
-                            el reloj
-```
+- Android Studio Hedgehog o superior, JDK 17
+- Teléfono/emulador Android (móvil) y dispositivo/emulador Android TV
+- Reloj Wear OS vinculado por Bluetooth al teléfono
+- **Los tres dispositivos en la misma red**
+- Broker MQTT (Mosquitto) accesible por IP desde los tres dispositivos
 
----
-
-# 🚨 13. Flujo completo de alerta SOS
-
-El reloj no necesita encargarse directamente de obtener la ubicación para iniciar una alerta.
-
-```text
-              USUARIO
-                 │
-                 │ Presiona SOS
-                 ▼
-        VinculacionViewModel
-                 │
-                 ▼
-        AlertaWearRepository
-                 │
-                 ├── Genera alertaId
-                 │
-                 ├── Obtiene deviceId
-                 │
-                 └── Genera payload JSON
-                         │
-                         ▼
-                    MqttManager
-                         │
-                         ▼
-                       MQTT
-                         │
-                         ▼
-              compasos/alerta/
-              {deviceId}/sos
-                         │
-                         ▼
-                     TELÉFONO
-                         │
-                         ├── Recibe SOS
-                         ├── Obtiene ubicación
-                         ├── Crea alerta
-                         └── Ejecuta acciones
-                            de emergencia
-```
-
----
-
-# 🗃️ 14. Persistencia del estado de vinculación
-
-El sistema utiliza dos mecanismos diferentes de almacenamiento:
-
-```text
-                    Wear OS
-                       │
-             ┌─────────┴─────────┐
-             │                   │
-             ▼                   ▼
-          Room DB            DataStore
-             │                   │
-             │                   │
-             ▼                   ▼
-       ConfigReloj         telefono_vinculado
-             │                   │
-             ├── deviceId        ├── true
-             ├── nombre          └── false
-             ├── código
-             └── configuración
-```
-
-### Room
-
-Se utiliza para almacenar información estructurada del reloj:
-
-* ID del dispositivo vinculado.
-* Nombre del teléfono.
-* Código de vinculación.
-* Configuración de emergencia.
-* Sensibilidad de detección.
-* Umbral cardíaco.
-* Modo discreto.
-* Tiempo de pánico.
-
-### DataStore
-
-Se utiliza específicamente para conservar el estado booleano:
-
-```text
-telefono_vinculado
-```
-
-Este valor permite determinar la pantalla inicial del reloj.
-
----
-
-# 📡 15. Topics MQTT del Wear OS
-
-```text
-compasos/
-│
-├── vinculacion
-│   │
-│   ├── {codigo}/solicitud
-│   │
-│   └── {codigo}/respuesta
-│
-├── dispositivo
-│
-└── alerta
-    │
-    └── {deviceId}
-        │
-        ├── sos
-        │
-        └── audio
-```
-
-### Solicitud de vinculación
-
-```text
-compasos/vinculacion/{codigo}/solicitud
-```
-
-### Respuesta de vinculación
-
-```text
-compasos/vinculacion/{codigo}/respuesta
-```
-
-### Alerta SOS
-
-```text
-compasos/alerta/{deviceId}/sos
-```
-
-### Audio
-
-```text
-compasos/alerta/{deviceId}/audio
-```
-
----
-
-# 🧩 16. Resumen de clases involucradas
-
-| Clase                   | Responsabilidad                                           |
-| ----------------------- | --------------------------------------------------------- |
-| `MqttConfig`            | Configuración del broker y topics                         |
-| `MqttManager`           | Conexión, publicación y suscripción MQTT                  |
-| `ConfigReloj`           | Entidad Room con configuración del reloj                  |
-| `ConfigRelojDao`        | Acceso a `ConfigReloj`                                    |
-| `VinculacionState`      | Estados del proceso de vinculación                        |
-| `VinculacionEvent`      | Eventos de vinculación                                    |
-| `VinculacionManager`    | Administración del estado                                 |
-| `VinculacionRepository` | Lógica de vinculación MQTT + Room                         |
-| `VinculacionPrefs`      | Persistencia del estado de vinculación mediante DataStore |
-| `AlertaWearRepository`  | Envío de SOS y audio mediante MQTT                        |
-| `VinculacionViewModel`  | Coordinación entre UI, MQTT, Room y sensores              |
-
----
-
-# 🏗️ 17. Arquitectura del módulo Wear OS
-
-```text
-CompaSOS_WearOS
-│
-├── UI
-│   └── Screens
-│
-├── ViewModel
-│   └── VinculacionViewModel
-│
-├── Repository
-│   ├── VinculacionRepository
-│   ├── VinculacionPrefs
-│   └── AlertaWearRepository
-│
-├── MQTT
-│   ├── MqttConfig
-│   └── MqttManager
-│
-├── Room
-│   ├── ConfigReloj
-│   ├── ConfigRelojDao
-│   └── WearDatabase
-│
-├── Services
-│   └── MovimientoDetector
-│
-└── Data
-    ├── VinculacionState
-    └── VinculacionEvent
-```
-
----
-
-# ✅ 18. Resumen de integración
-
-El módulo **CompaSOS_WearOS** integra cuatro mecanismos principales:
-
-1. **MQTT** para comunicación con el teléfono.
-2. **Room** para almacenar la configuración y el código de vinculación.
-3. **DataStore** para conservar el estado de vinculación.
-4. **Wearable Node API** como mecanismo anterior de detección directa del teléfono.
-
-El flujo actual de vinculación utiliza principalmente MQTT:
-
-```text
-Teléfono
-   │
-   │ Código de vinculación
-   ▼
-MQTT / Mosquitto
-   │
-   ▼
-Wear OS
-   │
-   ├── Guarda código en Room
-   │
-   ├── Solicita código al usuario
-   │
-   └── Valida código
-           │
-           ▼
-      Código correcto
-           │
-           ▼
-      Publica respuesta
-           │
-           ▼
-        Teléfono
-```
-
-Para las emergencias:
-
-```text
-Wear OS
-   │
-   │ SOS
-   ▼
-MQTT
-   │
-   ▼
-Teléfono
-   │
-   ├── Obtiene ubicación
-   ├── Procesa alerta
-   └── Ejecuta acciones
-       de emergencia
-```
-
-De esta manera, el **Wear OS funciona como un dispositivo periférico del ecosistema CompaSOS**, manteniendo sus propios datos localmente y utilizando MQTT como canal de comunicación con el teléfono.
-
-
-
-# Instrucciones para ejecutar el proyecto
-
-## Requisitos
-
-- Android Studio Hedgehog o superior.
-- JDK 17.
-- Dispositivo o emulador Android.
-- Permisos de ubicación y notificaciones habilitados en el dispositivo de prueba.
-
-## Pasos
-
-1. Clonar el repositorio.
+### 1. Levantar el broker MQTT (Mosquitto)
 
 ```bash
-git clone -b dev https://github.com/gutierrezvargasandy1/CompaSOS_Movil.git
+# instalar (Linux)
+sudo apt install mosquitto mosquitto-clients
+
+# mosquitto.conf
+listener 1883 0.0.0.0
+allow_anonymous true
 ```
 
-2. Abrir el proyecto en Android Studio.
+`0.0.0.0` es obligatorio: sin eso, Mosquitto solo escucha en `localhost`.
 
-3. Sincronizar las dependencias de Gradle.
+```bash
+sudo systemctl restart mosquitto
+```
 
-4. Ejecutar la aplicación en un dispositivo o emulador Android.
+Anota la IP de la máquina donde corre esto en la red local.
 
-5. Conceder los permisos de ubicación y notificaciones solicitados por la app.
+### 2. Configurar la misma IP del broker en todos los módulos
 
-6. Registrar un perfil y contactos de confianza para probar el envío de alertas SOS.
+```kotlin
+// teléfono: app/src/main/java/com/utng/compasos_movil/config/MqttConfig.kt
+const val BROKER_URL = "tcp://TU_IP_AQUI:1883"
 
-> Para el flujo completo con reloj y TV sincronizados en tiempo real, ver la sección **"⚙️ Cómo levantar el proyecto completo"** más arriba.
+// tv: app/src/main/java/com/example/compasos_tv/config/MqttConfig.kt
+const val BROKER_URL = "tcp://TU_IP_AQUI:1883"   // ← la MISMA IP
+
+// reloj: app/src/main/java/mx/edu/utng/compasos_wearos/config/mqtt/MqttConfig.kt
+const val BROKER_URL = "tcp://TU_IP_AQUI:1883"   // ← la MISMA IP
+```
+
+### 3. Configurar las claves de API
+
+Ambos módulos leen sus claves desde `app/src/main/res/values/developer-config.xml`:
+
+```xml
+<resources>
+    <string name="mapbox_access_token" translatable="false">TU_MAPBOX_TOKEN_AQUI</string>
+    <string name="youtube_api_key" translatable="false">TU_YOUTUBE_API_KEY_AQUI</string>
+</resources>
+```
+
+Además, el token de descarga de Mapbox en `~/.gradle/gradle.properties`:
+
+```properties
+MAPBOX_DOWNLOADS_TOKEN=sk.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+### 4. Compilar y ejecutar
+
+1. **Teléfono**: Abrir el proyecto, sincronizar Gradle, ejecutar.
+2. **TV**: Abrir el proyecto, sincronizar, ejecutar en emulador Android TV.
+3. **Reloj**: Abrir el proyecto, sincronizar, ejecutar en emulador Wear OS.
+
+### 5. Flujo de vinculación
+
+1. En el **teléfono**: Dispositivos → ícono de vincular TV → aparece un código.
+2. En la **TV**: pantalla de vinculación → teclear ese código.
+3. La TV reintenta la solicitud cada 3 s durante 60 s.
+4. Al confirmar, la TV navega a la pantalla principal.
+
+### 6. Probar con mosquitto-clients
+
+```bash
+# Ver todo el tráfico
+mosquitto_sub -h TU_IP -t 'compasos/#' -v
+
+# Simular una alerta
+mosquitto_pub -h TU_IP -t 'compasos/tv/tv_xxxxx/alerta' -m '{
+  "alertaId":"a1","tipoAlerta":"SOS","descripcion":"Prueba manual",
+  "emisorId":"u2","emisorNombre":"Luis Pérez",
+  "latitud":21.15,"longitud":-101.68,"fecha":"2026-08-16 12:01:00"}'
+```
 
 ---
-
 # Capturas de pantalla de la aplicación Movil
 
 ## Inicio de sesión
@@ -5468,365 +3971,86 @@ git clone -b dev https://github.com/gutierrezvargasandy1/CompaSOS_Movil.git
 
 
 
+## Estructura del Proyecto
 
-# 📁 Estructura del proyecto CompaSOS
-
-Este documento muestra la estructura de los tres módulos principales que conforman el ecosistema de **CompaSOS**:
-
-- 📱 **CompaSOS_Movil** — Aplicación móvil Android.
-- 📺 **CompaSOS_TV** — Aplicación para Android TV.
-- ⌚ **CompaSOS_WearOS** — Aplicación para Wear OS.
-
-Los archivos marcados como **NUEVO** corresponden a elementos agregados como parte de la integración entre dispositivos mediante **MQTT**.
-
----
-
-# 📱 1. CompaSOS_Movil
-
-**Paquete:** `com.utng.compasos_movil`
-
-```text
-CompaSOS_Movil/
-├── app/
-│   ├── src/
-│   │   ├── androidTest/
-│   │   │   └── java/
-│   │   │       └── com/
-│   │   │           └── utng/
-│   │   │               └── compasos_movil/
-│   │   │                   └── ExampleInstrumentedTest.kt
-│   │   │
-│   │   ├── main/
-│   │   │   ├── java/
-│   │   │   │   └── com/
-│   │   │   │       └── utng/
-│   │   │   │           └── compasos_movil/
-│   │   │   │
-│   │   │   │               ├── AlertaPhoneRepository/
-│   │   │   │               │   └── AlertaPhoneRepository.kt
-│   │   │   │               │
-│   │   │   │               ├── AuthModule/
-│   │   │   │               │   ├── Authservice.kt
-│   │   │   │               │   ├── Authviewmodel.kt
-│   │   │   │               │   └── Usuariorepository.kt
-│   │   │   │               │
-│   │   │   │               ├── config/
-│   │   │   │               │   ├── AlertaMqttService.kt
-│   │   │   │               │   ├── MqttConfig.kt
-│   │   │   │               │   ├── MqttManager.kt
-│   │   │   │               │   └── TvSyncService.kt          # NUEVO
-│   │   │   │               │
-│   │   │   │               ├── ContactosModule/
-│   │   │   │               │   └── ContactosViewModel.kt
-│   │   │   │               │
-│   │   │   │               ├── dao/
-│   │   │   │               │   └── MiembroConDatos.kt
-│   │   │   │               │
-│   │   │   │               ├── data/
-│   │   │   │               │   ├── dao/
-│   │   │   │               │   │   ├── AlertaDao.kt
-│   │   │   │               │   │   ├── AlertaOficialDao.kt
-│   │   │   │               │   │   ├── AudioDao.kt
-│   │   │   │               │   │   ├── ContactoEmergenciaDao.kt
-│   │   │   │               │   │   ├── DispositivoDao.kt
-│   │   │   │               │   │   ├── FamiliaDao.kt
-│   │   │   │               │   ├── FamiliaUsuarioDao.kt
-│   │   │   │               │   ├── HistorialUbicacionDao.kt
-│   │   │   │               │   ├── Llamada911Dao.kt
-│   │   │   │               │   ├── NotificacionDao.kt
-│   │   │   │               │   ├── PerfilMedicoDao.kt
-│   │   │   │               │   ├── SeguimientoDao.kt
-│   │   │   │               │   ├── SensorDao.kt
-│   │   │   │               │   ├── UbicacionDao.kt
-│   │   │   │               │   └── UsuarioDao.kt
-│   │   │   │               │
-│   │   │   │               ├── entity/
-│   │   │   │               │   ├── AlertaEntity.kt
-│   │   │   │               │   ├── AlertaOficialEntity.kt
-│   │   │   │               │   ├── AudioEntity.kt
-│   │   │   │               │   ├── ContactoEmergenciaEntity.kt
-│   │   │   │               │   ├── DispositivoEntity.kt
-│   │   │   │               │   ├── FamiliaEntity.kt
-│   │   │   │               │   ├── FamiliaUsuarioEntity.kt
-│   │   │   │               │   ├── HistorialUbicacionEntity.kt
-│   │   │   │               │   ├── Llamada911Entity.kt
-│   │   │   │               │   ├── NotificacionEntity.kt
-│   │   │   │               │   ├── PerfilMedicoEntity.kt
-│   │   │   │               │   ├── SeguimientoEntity.kt
-│   │   │   │               │   ├── SensorEntity.kt
-│   │   │   │               │   ├── UbicacionEntity.kt
-│   │   │   │               │   └── UsuarioEntity.kt
-│   │   │   │               │
-│   │   │   │               ├── wrapper/
-│   │   │   │               │   ├── Usuarioconperfilwrapper.kt
-│   │   │   │               │   └── Usuarioconubicacioneswrapper.kt
-│   │   │   │               │
-│   │   │   │               ├── AppDatabase.kt
-│   │   │   │               └── LocationRepository.kt
-│   │   │   │
-│   │   │   ├── DispositivosModule/
-│   │   │   │   └── DispositivosViewModel.kt
-│   │   │   │
-│   │   │   ├── FamiliaModule/
-│   │   │   │   └── FamiliaViewModel.kt
-│   │   │   │
-│   │   │   ├── HistorialModule/
-│   │   │   │   └── HistorialUbicacionesViewModel.kt
-│   │   │   │
-│   │   │   ├── LocalizacionModule/
-│   │   │   │   └── LocationViewModel.kt
-│   │   │   │
-│   │   │   ├── navigation/
-│   │   │   │   ├── AppNavigation.kt
-│   │   │   │   └── Screen.kt
-│   │   │   │
-│   │   │   ├── NotificacionesModule/
-│   │   │   │   └── NotificacionesViewModel.kt
-│   │   │   │
-│   │   │   ├── ProfileModule/
-│   │   │   │   ├── Editprofileviewmodel.kt
-│   │   │   │   ├── Perfilmedicorepository.kt
-│   │   │   │   └── Profileviewmodel.kt
-│   │   │   │
-│   │   │   ├── TvVinculacionModule/
-│   │   │   │   └── TvVinculacionViewModel.kt
-│   │   │   │
-│   │   │   ├── ui/
-│   │   │   │   ├── screens/
-│   │   │   │   │   ├── molals/
-│   │   │   │   │   │   ├── Compasosalert.kt
-│   │   │   │   │   │   └── Menulateral.kt
-│   │   │   │   │   │
-│   │   │   │   │   ├── AlertaDetalleScreen.kt
-│   │   │   │   │   ├── AlertasRecibidasScreen.kt
-│   │   │   │   │   ├── Contactosemergenciascreen.kt
-│   │   │   │   │   ├── Dashboardscreen.kt
-│   │   │   │   │   ├── Dispositivosscreen.kt
-│   │   │   │   │   ├── Editprofilescreen.kt
-│   │   │   │   │   ├── Familiascreen.kt
-│   │   │   │   │   ├── Historialubicacionesscreen.kt
-│   │   │   │   │   ├── LoginScreen.kt
-│   │   │   │   │   ├── Notificacionesscreen.kt
-│   │   │   │   │   ├── PerfilMedicoScreen.kt
-│   │   │   │   │   ├── Profilescreen.kt
-│   │   │   │   │   ├── RegistroUsuarioScreen.kt
-│   │   │   │   │   └── VincularTvScreen.kt
-│   │   │   │   │
-│   │   │   │   └── theme/
-│   │   │   │       ├── Color.kt
-│   │   │   │       ├── Compasostheme.kt
-│   │   │   │       ├── theme.kt
-│   │   │   │       └── Type.kt
-│   │   │   │
-│   │   │   ├── utils/
-│   │   │   │   ├── Sessionmanager.kt
-│   │   │   │   └── TvMqttPublisher.kt
-│   │   │   │
-│   │   │   └── MainActivity.kt
-│   │   │
-│   │   ├── keepRules/
-│   │   │   └── rules.keep
-│   │   │
-│   │   ├── res/
-│   │   │   ├── drawable/
-│   │   │   ├── mipmap-*/
-│   │   │   ├── values/
-│   │   │   │   ├── colors.xml
-│   │   │   │   ├── developer-config.xml       # Tokens, no subir al repositorio
-│   │   │   │   ├── strings.xml
-│   │   │   │   └── themes.xml
-│   │   │   └── xml/
-│   │   │
-│   │   └── AndroidManifest.xml
-│   │
-│   ├── test/
-│   │   └── java/
-│   │       └── com/
-│   │           └── utng/
-│   │               └── compasos_movil/
-│   │                   └── ExampleUnitTest.kt
-│   │
-│   ├── .gitignore
-│   └── build.gradle.kts
-│
-├── gradle/
-├── .gitignore
-├── build.gradle.kts
-├── gradle.properties
-├── gradlew
-├── gradlew.bat
-├── README.md
-└── settings.gradle.kts
+### 📱 CompaSOS_Movil
 
 ```
+CompaSOS_Movil/
+├── app/src/main/java/com/utng/compasos_movil/
+│   ├── config/
+│   │   ├── AlertaMqttService.kt      # Recibe SOS del reloj
+│   │   ├── MqttConfig.kt             # Configuración MQTT
+│   │   ├── MqttManager.kt            # Cliente MQTT
+│   │   └── TvSyncService.kt          # Sincronización con TV (NUEVO)
+│   ├── AlertaPhoneRepository/
+│   │   └── AlertaPhoneRepository.kt  # Procesa alertas y reenvía a TVs
+│   ├── TvVinculacionModule/
+│   │   └── TvVinculacionViewModel.kt # Vinculación de TV
+│   ├── data/
+│   │   ├── dao/
+│   │   │   ├── DispositivoDao.kt     # TVs vinculadas
+│   │   │   └── HistorialUbicacionDao.kt # Última ubicación por usuario
+│   │   └── entity/
+│   │       ├── DispositivoEntity.kt
+│   │       └── HistorialUbicacionEntity.kt
+│   ├── utils/
+│   │   └── TvMqttPublisher.kt        # API pública para enviar a TVs
+│   └── MainActivity.kt               # Inicia servicios
+```
 
-# 📺 2. CompaSOS_TV
-
-# Paquete: com.example.compasos_tv
+### 📺 CompaSOS_TV
 
 ```
 CompaSOS_TV/
-├── app/
-│   ├── src/
-│   │   └── main/
-│   │       ├── java/
-│   │       │   └── com/
-│   │       │       └── example/
-│   │       │           └── compasos_tv/
-│   │       │
-│   │       │               ├── config/
-│   │       │               │   ├── MqttConfig.kt
-│   │       │               │   └── MqttManager.kt             # Singleton
-│   │       │               │
-│   │       │               ├── data/
-│   │       │               │   └── entitys/
-│   │       │               │       ├── dao/
-│   │       │               │       │   ├── AlertaTvDao.kt
-│   │       │               │       │   ├── ConfigTvDao.kt
-│   │       │               │       │   ├── FamiliarTvDao.kt
-│   │       │               │       │   └── VideoTvDao.kt
-│   │       │               │       │
-│   │       │               │       ├── AlertaTvEntity.kt
-│   │       │               │       ├── AppDatabaseTv.kt
-│   │       │               │       ├── ConfigTvEntity.kt
-│   │       │               │       ├── FamiliarTvEntity.kt
-│   │       │               │       ├── NotificacionTvDao.kt       # NUEVO
-│   │       │               │       ├── NotificacionTvEntity.kt   # NUEVO
-│   │       │               │       ├── VideosSeguridadRepository.kt
-│   │       │               │       └── VideoTvEntity.kt
-│   │       │               │
-│   │       │               ├── Navigation/
-│   │       │               │   ├── TvNavigation.kt
-│   │       │               │   └── TvScreen.kt
-│   │       │               │
-│   │       │               ├── Screan/
-│   │       │               │   ├── ManejadorTeclasReproductor.kt
-│   │       │               │   ├── TvAlertasScreen.kt
-│   │       │               │   ├── TvConfiguracionScreen.kt
-│   │       │               │   ├── TvDashboardScreen.kt
-│   │       │               │   ├── TvFamiliaScreen.kt
-│   │       │               │   ├── TvMainScreen.kt
-│   │       │               │   ├── TvVideosScreen.kt
-│   │       │               │   └── VinculacionScreen.kt
-│   │       │               │
-│   │       │               ├── services/
-│   │       │               │   ├── CategoriaVideo.kt
-│   │       │               │   ├── TvMqttService.kt
-│   │       │               │   └── VinculacionTvRepository.kt
-│   │       │               │
-│   │       │               ├── ui/
-│   │       │               │   └── theme/
-│   │       │               │       ├── Color.kt
-│   │       │               │       ├── Theme.kt
-│   │       │               │       └── Type.kt
-│   │       │               │
-│   │       │               └── MainActivity.kt
-│   │       │
-│   │       ├── keepRules/
-│   │       │   └── rules.keep
-│   │       │
-│   │       ├── res/
-│   │       │   ├── mipmap-*/
-│   │       │   └── values/
-│   │       │       ├── developer-config.xml       # Tokens, no subir al repositorio
-│   │       │       ├── strings.xml
-│   │       │       └── themes.xml
-│   │       │
-│   │       └── AndroidManifest.xml
-│   │
-│   ├── .gitignore
-│   └── build.gradle.kts
-│
-├── gradle/
-├── .gitignore
-├── build.gradle.kts
-├── gradle.properties
-├── gradlew
-├── gradlew.bat
-└── settings.gradle.kts
-```
-# ⌚ 3. CompaSOS_WearOS
-
-#Paquete: mx.edu.utng.compasos_wearos
-
-```
-CompaSOS_WeareOS/
-├── .gradle/
-│   ├── 8.13/
-│   │   ├── checksums/
-│   │   ├── expanded/
-│   │   ├── fileChanges/
-│   │   ├── fileHashes/
-│   │   └── vcsMetadata/
-│   ├── buildOutputCleanup/
-│   └── vcs-1/
-│
-├── .idea/
-│   └── inspectionProfiles/
-│
-├── .kotlin/
-│   └── errors/
-│
-├── app/
-│   └── src/
-│       └── main/
-│           ├── java/
-│           │   └── mx/
-│           │       └── edu/
-│           │           └── utng/
-│           │               └── compasos_wearos/
-│           │                   │
-│           │                   ├── config/
-│           │                   │   └── mqtt/
-│           │                   │
-│           │                   ├── data/
-│           │                   │   ├── dao/
-│           │                   │   ├── db/
-│           │                   │   ├── entity/
-│           │                   │   └── repository/
-│           │                   │
-│           │                   ├── helper/
-│           │                   │
-│           │                   ├── navigation/
-│           │                   │
-│           │                   ├── presentation/
-│           │                   │   └── theme/
-│           │                   │
-│           │                   ├── services/
-│           │                   │
-│           │                   ├── ui/
-│           │                   │   └── screens/
-│           │                   │
-│           │                   └── viewmodel/
-│           │
-│           └── res/
-│               ├── drawable/
-│               ├── mipmap-anydpi/
-│               ├── mipmap-hdpi/
-│               ├── mipmap-mdpi/
-│               ├── mipmap-xhdpi/
-│               ├── mipmap-xxhdpi/
-│               ├── mipmap-xxxhdpi/
-│               ├── raw/
-│               ├── values/
-│               └── values-round/
-│
-├── gradle/
-│   └── wrapper/
-│
-├── imagenes/
-│
-├── .gitignore
-├── app-debug.apk
-├── build.gradle.kts
-├── gradle.properties
-├── gradlew
-├── gradlew.bat
-├── README.md
-└── settings.gradle.kts
+├── app/src/main/java/com/example/compasos_tv/
+│   ├── config/
+│   │   ├── MqttConfig.kt             # Configuración MQTT
+│   │   └── MqttManager.kt            # Singleton MQTT
+│   ├── services/
+│   │   ├── TvMqttService.kt          # Servicio MQTT de TV
+│   │   └── VinculacionTvRepository.kt # Vinculación con teléfono
+│   ├── data/entitys/
+│   │   ├── dao/
+│   │   │   ├── FamiliarTvDao.kt      # Familiares en TV
+│   │   │   ├── AlertaTvDao.kt        # Alertas en TV
+│   │   │   └── NotificacionTvDao.kt  # Notificaciones en TV
+│   │   ├── FamiliarTvEntity.kt
+│   │   ├── AlertaTvEntity.kt
+│   │   └── NotificacionTvEntity.kt   # (NUEVO)
+│   ├── Screan/
+│   │   ├── TvAlertasScreen.kt        # Bandeja de alertas (NUEVO)
+│   │   ├── TvDashboardScreen.kt      # Pantalla principal
+│   │   └── VinculacionScreen.kt      # Pantalla de vinculación
+│   └── MainActivity.kt               # Inicia TvMqttService
 ```
 
-# Autores
+### ⌚ CompaSOS_WearOS
+
+```
+CompaSOS_WearOS/
+├── app/src/main/java/mx/edu/utng/compasos_wearos/
+│   ├── config/mqtt/
+│   │   ├── MqttConfig.kt             # Configuración MQTT
+│   │   └── MqttManager.kt            # Cliente MQTT
+│   ├── data/
+│   │   ├── entity/
+│   │   │   └── ConfigReloj.kt        # Configuración en Room
+│   │   ├── repository/
+│   │   │   ├── VinculacionRepository.kt # Vinculación MQTT
+│   │   │   ├── VinculacionPrefs.kt   # Estado en DataStore
+│   │   │   └── AlertaWearRepository.kt # Envío de SOS
+│   │   ├── VinculacionState.kt       # Estados de vinculación
+│   │   └── VinculacionEvent.kt       # Eventos de vinculación
+│   ├── viewmodel/
+│   │   └── VinculacionViewModel.kt   # ViewModel principal
+│   └── services/
+│       └── MovimientoDetector.kt     # Detección de caídas
+```
+
+---
+
+## Autores
 
 **José Andrés Gutiérrez Vargas**
 
@@ -5836,6 +4060,6 @@ CompaSOS_WeareOS/
 
 ---
 
-# Licencia
+## Licencia
 
 Proyecto desarrollado con fines académicos para la Universidad Tecnológica del Norte de Guanajuato.
